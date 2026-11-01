@@ -9,6 +9,7 @@ Sentinel NOC is a JavaFX desktop IDS prototype with an offline PCAP import and h
 - Windows, Linux, or macOS with a JavaFX-supported desktop
 
 Pcap4J 1.8.2 is used to decode packet metadata. The offline reader is implemented in Java and does not require Npcap/libpcap. No new dependencies are needed for PCAP import.
+SQLite JDBC stores import history, alerts, and detection-rule settings locally.
 
 ## Run
 
@@ -42,7 +43,7 @@ Detection thresholds and the shared observation window (1–3,600 seconds) can b
 | TCP SYN rate heuristic | 100 | Bare SYN packets per source; not proof of a SYN flood |
 | ICMP traffic threshold | 100 | ICMP/ICMPv6 packets per source; ICMP is not inherently malicious |
 
-Alerts are suppressed per rule and source for 10 seconds of **PCAP event time**, not wall-clock processing time. Out-of-order packets within the retained window are aggregated using their capture timestamps. Packets arriving later than the current source watermark minus the retention window are excluded from rule statistics and counted as late drops.
+Alerts are suppressed per rule and source for 10 seconds of **PCAP event time**, not wall-clock processing time. Out-of-order packets within the retained window are aggregated using their capture timestamps. Packets arriving later than the current source watermark minus the retention window are excluded from rule statistics and counted as late drops. Rule settings are restored at startup; use **Save Rules** to persist edited settings, and each import also saves its active settings before processing.
 
 Rule metrics trigger when they are greater than or equal to their configured threshold. Evidence includes the rule ID/name, source, observed metric, threshold, and observation-window duration; the alert timestamp is the triggering packet's PCAP timestamp. Findings are heuristics, not confirmation that a host or packet is malicious.
 
@@ -55,7 +56,15 @@ Rule metrics trigger when they are greater than or equal to their configured thr
 - Traffic aggregation tracks at most 10,000 sources, 4,096 timestamp buckets per source, and 100,000 buckets total.
 - At most 2,000 generated alerts are retained for one import. The import summary reports additional findings omitted by that limit.
 - Aggregation capacity evictions and late packet exclusions are counted and shown in the import summary; capacity eviction can reduce detection visibility.
-- The in-memory alert repository retains at most 5,000 alerts for the current application session; it is not durable storage.
+- The dashboard loads at most 500 recent alerts and 100 recent import sessions at a time; the database does not automatically delete older records.
+
+## Local database
+
+The default database location is `%LOCALAPPDATA%\SentinelNOC\sentinel_noc.db` on Windows. On other platforms it uses `~/.local/share/SentinelNOC/sentinel_noc.db`. Set the JVM system property `sentinel.db.path` to override the file location (for example, pass `-Dsentinel.db.path=C:\data\sentinel_noc.db` to the application JVM).
+
+If SQLite cannot be initialized or queried, the dashboard reports the storage error and disables PCAP imports rather than claiming that alerts were saved. Import parsing and detection run in the background. The session and generated alerts are committed together; cancelled or failed imports retain a terminal history status but do not save partial alerts.
+
+Close Sentinel NOC before making a file-copy backup. Copy `sentinel_noc.db` to a separate safe location. To restore, close the application, replace the database file with the backup, and restart. Do not delete the database to troubleshoot errors; preserve a copy and review the logs. The schema version is stored in SQLite `PRAGMA user_version`.
 
 Input packet payloads are parsed only as protocol metadata. The application does not execute payloads, change firewall configuration, or transmit capture data to external services.
 

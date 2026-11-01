@@ -7,6 +7,11 @@ import javafx.scene.Scene;
 import javafx.scene.control.Alert;
 import javafx.stage.Stage;
 import com.soc.ui.controller.MainDashboardController;
+import com.soc.detection.DetectionRuleSettings;
+import com.soc.persistence.ImportPersistence;
+import com.soc.persistence.PersistenceException;
+import com.soc.persistence.SqliteDatabase;
+import com.soc.persistence.SqliteImportPersistence;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -15,12 +20,36 @@ import java.io.IOException;
 public class MainApp extends Application {
     private static final Logger LOGGER = LoggerFactory.getLogger(MainApp.class);
     private MainDashboardController dashboardController;
+    private ImportPersistence persistence;
+    private DetectionRuleSettings ruleSettings = DetectionRuleSettings.defaults();
+    private String persistenceFailure;
+
+    @Override
+    public void init() {
+        try {
+            SqliteDatabase database = SqliteDatabase.forCurrentUser();
+            database.initialize();
+            SqliteImportPersistence sqlitePersistence = new SqliteImportPersistence(database);
+            sqlitePersistence.markRunningImportsInterrupted();
+            ruleSettings = sqlitePersistence.loadOrCreateRuleSettings();
+            persistence = sqlitePersistence;
+        } catch (PersistenceException exception) {
+            persistenceFailure = exception.getMessage();
+            LOGGER.error("Persistent storage is unavailable; imports will be disabled", exception);
+        }
+    }
 
     @Override
     public void start(Stage primaryStage) {
         Parent root;
         try {
             FXMLLoader loader = new FXMLLoader(MainApp.class.getResource("/com/soc/ui/view/MainDashboard.fxml"));
+            loader.setControllerFactory(controllerType -> {
+                if (controllerType == MainDashboardController.class) {
+                    return new MainDashboardController(persistence, ruleSettings, persistenceFailure);
+                }
+                throw new IllegalStateException("Unsupported FXML controller: " + controllerType.getName());
+            });
             root = loader.load();
             dashboardController = loader.getController();
         } catch (IOException | RuntimeException exception) {

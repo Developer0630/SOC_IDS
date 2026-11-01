@@ -52,6 +52,7 @@
                 <Label text="Security monitoring overview" styleClass="page-subtitle"/>
             </VBox>
             <Region HBox.hgrow="ALWAYS"/>
+            <Label fx:id="databaseStatusLabel" text="DATABASE STARTING" styleClass="status-badge status-neutral"/>
             <Label fx:id="sourceStatusLabel" text="SOURCE  NOT CONNECTED" styleClass="status-badge status-neutral"/>
             <Label fx:id="engineStatusLabel" text="ENGINE  IDLE" styleClass="status-badge status-neutral"/>
             <CheckBox fx:id="darkThemeToggle" text="Dark theme" onAction="#handleThemeChanged"
@@ -120,6 +121,8 @@
                     <CheckBox fx:id="icmpEnabled" text="ICMP rate" selected="true"/>
                     <TextField fx:id="icmpThreshold" text="100" prefColumnCount="4"
                                promptText="packets" styleClass="threshold-field"/>
+                    <Button fx:id="saveRulesButton" text="Save Rules" onAction="#handleSaveRules"
+                            styleClass="secondary-button" disable="true"/>
                 </HBox>
                 <ProgressBar fx:id="importProgressBar" progress="0" maxWidth="Infinity"/>
                 <Label fx:id="importStatusLabel" text="Select a classic PCAP file to begin."
@@ -137,7 +140,8 @@
                                                styleClass="section-description"/>
                                     </VBox>
                                     <Region HBox.hgrow="ALWAYS"/>
-                                    <Label text="Session memory only" styleClass="status-badge status-neutral"/>
+                                    <Button text="Show Recent" onAction="#handleShowRecentAlerts"
+                                            styleClass="secondary-button"/>
                                 </HBox>
                                 <TableView fx:id="alertTable" VBox.vgrow="ALWAYS" styleClass="data-table"
                                            onMouseClicked="#handleShowAlertDetails">
@@ -149,6 +153,31 @@
                                         <TableColumn fx:id="alertSourceColumn" text="Source IP" prefWidth="170"/>
                                         <TableColumn fx:id="alertTypeColumn" text="Detection rule" prefWidth="210"/>
                                         <TableColumn fx:id="severityColumn" text="Severity" prefWidth="130"/>
+                                    </columns>
+                                </TableView>
+                            </VBox>
+                        </content>
+                    </Tab>
+                    <Tab text="Import History" closable="false">
+                        <content>
+                            <VBox spacing="10" styleClass="section-panel">
+                                <HBox alignment="CENTER_LEFT">
+                                    <VBox spacing="3">
+                                        <Label text="Persistent PCAP import history" styleClass="section-title"/>
+                                        <Label text="Select a completed import to review its stored alerts."
+                                               styleClass="section-description"/>
+                                    </VBox>
+                                </HBox>
+                                <TableView fx:id="importHistoryTable" VBox.vgrow="ALWAYS" styleClass="data-table">
+                                    <placeholder>
+                                        <Label text="No PCAP import history is stored."/>
+                                    </placeholder>
+                                    <columns>
+                                        <TableColumn fx:id="historyStartedColumn" text="Started" prefWidth="190"/>
+                                        <TableColumn fx:id="historyFileColumn" text="File" prefWidth="260"/>
+                                        <TableColumn fx:id="historyStatusColumn" text="Status" prefWidth="120"/>
+                                        <TableColumn fx:id="historyRecordsColumn" text="Records" prefWidth="110"/>
+                                        <TableColumn fx:id="historyAlertsColumn" text="Alerts generated" prefWidth="120"/>
                                     </columns>
                                 </TableView>
                             </VBox>

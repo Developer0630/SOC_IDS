@@ -5,6 +5,9 @@ import com.soc.detection.DetectionRuleSettings;
 import com.soc.detection.InMemoryAlertRepository;
 import com.soc.model.AlertStatus;
 import com.soc.model.RiskLevel;
+import com.soc.persistence.ImportSessionStatus;
+import com.soc.persistence.SqliteDatabase;
+import com.soc.persistence.SqliteImportPersistence;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -272,5 +275,62 @@ class PcapImportServiceTest {
         assertEquals(1, second.alertsGenerated());
         assertEquals(2, repository.findAll().size());
         assertTrue(!repository.findAll().get(0).importId().equals(repository.findAll().get(1).importId()));
+    }
+
+    @Test
+    void fullImportPersistsSessionAndEvidenceAcrossDatabaseReopen() throws IOException {
+        Path capture = TestPcapFixtures.writeCapture(
+                temporaryDirectory.resolve("persistent.pcap"),
+                TestPcapFixtures.tcpFrame(40000, 80, 0x10),
+                TestPcapFixtures.tcpFrame(40000, 443, 0x10));
+        Path databasePath = temporaryDirectory.resolve("app-data").resolve("sentinel.db");
+        SqliteImportPersistence persistence = openPersistence(databasePath);
+        PcapImportService service = new PcapImportService(PcapReadConfig.defaults(), persistence);
+        UUID importId = UUID.randomUUID();
+
+        ImportSummary result = service.importFile(
+                capture,
+                importId,
+                new DetectionRuleSettings(2, 100, 100, 10, true, true, true),
+                () -> false,
+                (bytes, size, count) -> {
+                });
+
+        SqliteImportPersistence reopened = openPersistence(databasePath);
+        assertEquals(1, result.alertsGenerated());
+        assertEquals(ImportSessionStatus.COMPLETED, reopened.recentImports(10).get(0).status());
+        assertEquals(1, reopened.findByImport(importId, 10).size());
+        assertEquals(result.alerts().get(0).evidence(),
+                reopened.findByImport(importId, 10).get(0).evidence());
+        assertEquals(result.alerts().get(0), reopened.findByImport(importId, 10).get(0));
+    }
+
+    @Test
+    void parseFailureAndCancellationArePersistedWithTerminalStatuses() throws IOException {
+        Path badCapture = temporaryDirectory.resolve("invalid.pcap");
+        Files.write(badCapture, new byte[24]);
+        Path databasePath = temporaryDirectory.resolve("terminal-status.db");
+        SqliteImportPersistence persistence = openPersistence(databasePath);
+        PcapImportService service = new PcapImportService(PcapReadConfig.defaults(), persistence);
+        UUID failedId = UUID.randomUUID();
+        UUID cancelledId = UUID.randomUUID();
+
+        assertThrows(IOException.class, () -> service.importFile(
+                badCapture, failedId, () -> false, (bytes, size, count) -> {
+                }));
+        assertThrows(CancellationException.class, () -> service.importFile(
+                badCapture, cancelledId, () -> true, (bytes, size, count) -> {
+                }));
+
+        assertEquals(ImportSessionStatus.FAILED, persistence.recentImports(10).stream()
+                .filter(session -> session.id().equals(failedId)).findFirst().orElseThrow().status());
+        assertEquals(ImportSessionStatus.CANCELLED, persistence.recentImports(10).stream()
+                .filter(session -> session.id().equals(cancelledId)).findFirst().orElseThrow().status());
+    }
+
+    private SqliteImportPersistence openPersistence(Path path) {
+        SqliteDatabase database = new SqliteDatabase(path);
+        database.initialize();
+        return new SqliteImportPersistence(database);
     }
 }

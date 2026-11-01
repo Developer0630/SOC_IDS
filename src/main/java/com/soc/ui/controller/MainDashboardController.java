@@ -1,6 +1,5 @@
 package com.soc.ui.controller;
 
-import com.soc.detection.InMemoryAlertRepository;
 import com.soc.detection.DetectionRuleSettings;
 import com.soc.model.AlertStatus;
 import com.soc.model.IntrusionAlert;
@@ -10,6 +9,9 @@ import com.soc.network.capture.ImportSummary;
 import com.soc.network.capture.PcapFileReader;
 import com.soc.network.capture.PcapImportService;
 import com.soc.network.capture.PcapReadConfig;
+import com.soc.persistence.ImportPersistence;
+import com.soc.persistence.ImportSession;
+import com.soc.persistence.PersistenceException;
 import javafx.fxml.FXML;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
@@ -23,6 +25,7 @@ import javafx.scene.control.TableColumn;
 import javafx.scene.control.TableCell;
 import javafx.scene.control.TableView;
 import javafx.scene.control.TextField;
+import javafx.scene.control.Tooltip;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.input.MouseEvent;
 import javafx.stage.FileChooser;
@@ -37,9 +40,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class MainDashboardController {
     private static final Logger LOGGER = LoggerFactory.getLogger(MainDashboardController.class);
@@ -61,6 +68,18 @@ public class MainDashboardController {
     private TableColumn<IntrusionAlert, String> alertTypeColumn;
     @FXML
     private TableColumn<IntrusionAlert, RiskLevel> severityColumn;
+    @FXML
+    private TableView<ImportSession> importHistoryTable;
+    @FXML
+    private TableColumn<ImportSession, String> historyStartedColumn;
+    @FXML
+    private TableColumn<ImportSession, String> historyFileColumn;
+    @FXML
+    private TableColumn<ImportSession, String> historyStatusColumn;
+    @FXML
+    private TableColumn<ImportSession, Number> historyRecordsColumn;
+    @FXML
+    private TableColumn<ImportSession, Number> historyAlertsColumn;
     @FXML
     private TableView<NetworkPacket> trafficTable;
     @FXML
@@ -88,6 +107,8 @@ public class MainDashboardController {
     @FXML
     private Label engineStatusLabel;
     @FXML
+    private Label databaseStatusLabel;
+    @FXML
     private Label packetsValue;
     @FXML
     private Label alertsValue;
@@ -103,6 +124,8 @@ public class MainDashboardController {
     private Button cancelImportButton;
     @FXML
     private Button chooseFileButton;
+    @FXML
+    private Button saveRulesButton;
     @FXML
     private CheckBox portScanEnabled;
     @FXML
@@ -120,16 +143,32 @@ public class MainDashboardController {
 
     private final ObservableList<IntrusionAlert> alerts = FXCollections.observableArrayList();
     private final ObservableList<NetworkPacket> traffic = FXCollections.observableArrayList();
-    private final InMemoryAlertRepository alertRepository = new InMemoryAlertRepository();
-    private final PcapImportService importService = new PcapImportService(PCAP_LIMITS, alertRepository);
+    private final ObservableList<ImportSession> importHistory = FXCollections.observableArrayList();
+    private final ImportPersistence persistence;
+    private final String persistenceFailure;
+    private final PcapImportService importService;
     private final ExecutorService importExecutor = Executors.newSingleThreadExecutor(task -> {
         Thread thread = new Thread(task, "sentinel-pcap-import");
         thread.setDaemon(true);
         return thread;
     });
     private Path selectedFile;
-    private Task<ImportSummary> activeImport;
+    private Task<ImportTaskResult> activeImport;
+    private AtomicBoolean importCancellation;
     private boolean closed;
+    private boolean persistenceReady;
+
+    public MainDashboardController(
+            ImportPersistence persistence,
+            DetectionRuleSettings initialRuleSettings,
+            String persistenceFailure) {
+        this.persistence = persistence;
+        this.persistenceFailure = persistenceFailure;
+        this.importService = persistence == null ? null : new PcapImportService(PCAP_LIMITS, persistence);
+        this.initialRuleSettings = initialRuleSettings;
+    }
+
+    private final DetectionRuleSettings initialRuleSettings;
 
     @FXML
     private void initialize() {
@@ -156,6 +195,24 @@ public class MainDashboardController {
             }
         });
         alertTable.setItems(alerts);
+        historyStartedColumn.setCellValueFactory(cell ->
+                new javafx.beans.property.SimpleStringProperty(
+                        TIMESTAMP_FORMAT.format(cell.getValue().startedAt())));
+        historyFileColumn.setCellValueFactory(cell ->
+                new javafx.beans.property.SimpleStringProperty(cell.getValue().fileName()));
+        historyStatusColumn.setCellValueFactory(cell ->
+                new javafx.beans.property.SimpleStringProperty(cell.getValue().status().name()));
+        historyRecordsColumn.setCellValueFactory(cell ->
+                new javafx.beans.property.SimpleLongProperty(cell.getValue().totalRecords()));
+        historyAlertsColumn.setCellValueFactory(cell ->
+                new javafx.beans.property.SimpleLongProperty(cell.getValue().alertsCreated()));
+        importHistoryTable.setItems(importHistory);
+        importHistoryTable.getSelectionModel().selectedItemProperty().addListener(
+                (observable, previous, selected) -> {
+                    if (selected != null) {
+                        showImportAlerts(selected.id());
+                    }
+                });
         trafficTimeColumn.setCellValueFactory(cell ->
                 new javafx.beans.property.SimpleStringProperty(TIMESTAMP_FORMAT.format(cell.getValue().timestamp())));
         trafficSourceColumn.setCellValueFactory(cell ->
@@ -173,11 +230,28 @@ public class MainDashboardController {
                 new javafx.beans.property.SimpleStringProperty(cell.getValue().dnsQueryName().orElse("—")));
         trafficTable.setItems(traffic);
         cancelImportButton.setDisable(true);
+        chooseFileButton.setDisable(true);
+        saveRulesButton.setDisable(true);
         importProgressBar.setProgress(0);
+        applyRuleSettings(initialRuleSettings);
+        if (persistence == null) {
+            databaseStatusLabel.setText("DATABASE UNAVAILABLE");
+            databaseStatusLabel.setTooltip(new Tooltip(
+                    Optional.ofNullable(persistenceFailure).orElse("Persistent storage could not be initialized.")));
+            importStatusLabel.setText("Database unavailable; PCAP imports are disabled to prevent data loss.");
+            return;
+        }
+        databaseStatusLabel.setText("DATABASE READY");
+        databaseStatusLabel.setTooltip(new Tooltip(
+                "SQLite: " + persistence.databasePath().map(Path::toString).orElse("not configured")));
+        loadDashboardAsync();
     }
 
     @FXML
     private void handleChooseFile() {
+        if (!persistenceReady || closed) {
+            return;
+        }
         FileChooser chooser = new FileChooser();
         chooser.setTitle("Select classic PCAP capture");
         chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("Classic PCAP (*.pcap)", "*.pcap"));
@@ -210,43 +284,36 @@ public class MainDashboardController {
 
     @FXML
     private void handleStartImport() {
-        if (closed || selectedFile == null || activeImport != null) {
+        if (closed || !persistenceReady || selectedFile == null || activeImport != null) {
             return;
         }
-        DetectionRuleSettings ruleSettings;
-        try {
-            ruleSettings = new DetectionRuleSettings(
-                    parseThreshold(portScanThreshold, "Port scan"),
-                    parseThreshold(synThreshold, "SYN"),
-                    parseThreshold(icmpThreshold, "ICMP"),
-                    parseThreshold(observationWindow, "Observation window"),
-                    portScanEnabled.isSelected(),
-                    synEnabled.isSelected(),
-                    icmpEnabled.isSelected());
-        } catch (IllegalArgumentException exception) {
-            importStatusLabel.setText("Rule configuration error: " + exception.getMessage());
+        DetectionRuleSettings ruleSettings = readRuleSettings();
+        if (ruleSettings == null) {
             return;
         }
         Path importPath = selectedFile;
         UUID importId = UUID.randomUUID();
-        Task<ImportSummary> task = new Task<>() {
+        importCancellation = new AtomicBoolean();
+        Task<ImportTaskResult> task = new Task<>() {
             @Override
-            protected ImportSummary call() throws Exception {
-                updateMessage("Validating PCAP header...");
-                return importService.importFile(
+            protected ImportTaskResult call() throws Exception {
+                persistence.saveRuleSettings(ruleSettings);
+                updateMessage("Creating import history and validating PCAP header...");
+                ImportSummary summary = importService.importFile(
                         importPath,
                         importId,
                         ruleSettings,
-                        this::isCancelled,
+                        importCancellation::get,
                         (bytesRead, fileSize, packetCount) -> {
                             updateProgress(bytesRead, fileSize);
                             updateMessage("Reading packet " + packetCount + " · " + formatBytes(bytesRead)
                                     + " of " + formatBytes(fileSize));
                         });
+                return new ImportTaskResult(summary);
             }
         };
         activeImport = task;
-        setImportRunning(true);
+        setControlsBusy(true);
         importStatusLabel.textProperty().unbind();
         importStatusLabel.textProperty().bind(task.messageProperty());
 
@@ -255,17 +322,15 @@ public class MainDashboardController {
                 return;
             }
             importStatusLabel.textProperty().unbind();
-            ImportSummary result = task.getValue();
+            importProgressBar.progressProperty().unbind();
+            ImportSummary result = task.getValue().summary();
+            importHistoryTable.getSelectionModel().clearSelection();
             traffic.setAll(result.trafficSample());
-            alerts.setAll(alertRepository.findAll());
             packetsValue.setText(Long.toString(result.packetsParsed()));
-            alertsValue.setText(Integer.toString(alerts.size()));
-            criticalAlertsValue.setText(Long.toString(alerts.stream()
-                    .filter(alert -> alert.severity() == RiskLevel.CRITICAL).count()));
             sourceIpsValue.setText(Integer.toString(result.trackedSources()));
             sourceStatusLabel.setText("SOURCE IMPORTED");
             engineStatusLabel.setText("ENGINE READY");
-            importStatusLabel.setText("Completed: " + result.packetsRead() + " records, "
+            importStatusLabel.setText("Completed and persisted: " + result.packetsRead() + " records, "
                     + result.packetsParsed() + " parsed, " + result.unsupportedPackets()
                     + " unsupported, " + result.malformedPackets() + " malformed, "
                     + result.alertsGenerated() + " alerts generated, "
@@ -284,7 +349,9 @@ public class MainDashboardController {
             }
             importProgressBar.setProgress(1);
             activeImport = null;
-            setImportRunning(false);
+            importCancellation = null;
+            setControlsBusy(false);
+            refreshDashboardAsync();
         });
         task.setOnCancelled(event -> {
             if (closed) {
@@ -293,9 +360,11 @@ public class MainDashboardController {
             importStatusLabel.textProperty().unbind();
             importProgressBar.progressProperty().unbind();
             importProgressBar.setProgress(0);
-            importStatusLabel.setText("Import cancelled. No partial alerts were saved.");
+            importStatusLabel.setText("Import cancelled. Partial alerts were not persisted.");
             activeImport = null;
-            setImportRunning(false);
+            importCancellation = null;
+            setControlsBusy(false);
+            refreshDashboardAsync();
         });
         task.setOnFailed(event -> {
             if (closed) {
@@ -306,11 +375,25 @@ public class MainDashboardController {
             importProgressBar.setProgress(0);
             Throwable failure = task.getException();
             String message = failure == null ? "Unknown import error" : failure.getMessage();
-            importStatusLabel.setText("Import failed: " + message);
-            LOGGER.error("PCAP import task failed for '{}': {}",
-                    importPath.getFileName(), message, failure);
+            if (failure instanceof CancellationException) {
+                importStatusLabel.setText("Import cancelled; processed records and cancellation status were saved.");
+            } else {
+                importStatusLabel.setText("Import failed; persistence was not confirmed: " + message);
+            }
+            if (failure instanceof CancellationException) {
+                LOGGER.info("PCAP import cancelled for '{}'", importPath.getFileName());
+            } else {
+                LOGGER.error("PCAP import task failed for '{}': {}",
+                        importPath.getFileName(), message, failure);
+            }
             activeImport = null;
-            setImportRunning(false);
+            importCancellation = null;
+            setControlsBusy(false);
+            if (failure instanceof PersistenceException) {
+                handleDatabaseUnavailable(failure);
+                return;
+            }
+            refreshDashboardAsync();
         });
         importProgressBar.progressProperty().unbind();
         importProgressBar.progressProperty().bind(task.progressProperty());
@@ -318,9 +401,77 @@ public class MainDashboardController {
     }
 
     @FXML
+    private void handleSaveRules() {
+        if (closed || !persistenceReady) {
+            return;
+        }
+        DetectionRuleSettings ruleSettings = readRuleSettings();
+        if (ruleSettings == null) {
+            return;
+        }
+        Task<Void> task = new Task<>() {
+            @Override
+            protected Void call() {
+                persistence.saveRuleSettings(ruleSettings);
+                return null;
+            }
+        };
+        setControlsBusy(true);
+        task.setOnSucceeded(event -> {
+            if (closed) {
+                return;
+            }
+            importStatusLabel.setText("Detection rule configuration saved.");
+            setControlsBusy(false);
+        });
+        task.setOnFailed(event -> {
+            if (closed) {
+                return;
+            }
+            Throwable failure = task.getException();
+            importStatusLabel.setText("Unable to save detection rules: "
+                    + (failure == null ? "Unknown persistence error" : failure.getMessage()));
+            LOGGER.error("Unable to persist detection rule configuration", failure);
+            setControlsBusy(false);
+            if (failure instanceof PersistenceException) {
+                handleDatabaseUnavailable(failure);
+            }
+        });
+        importExecutor.execute(task);
+    }
+
+    @FXML
+    private void handleShowRecentAlerts() {
+        if (closed || !persistenceReady) {
+            return;
+        }
+        importHistoryTable.getSelectionModel().clearSelection();
+        loadLatestAlertsAsync();
+    }
+
+    private DetectionRuleSettings readRuleSettings() {
+        try {
+            return new DetectionRuleSettings(
+                    parseThreshold(portScanThreshold, "Port scan"),
+                    parseThreshold(synThreshold, "SYN"),
+                    parseThreshold(icmpThreshold, "ICMP"),
+                    parseThreshold(observationWindow, "Observation window"),
+                    portScanEnabled.isSelected(),
+                    synEnabled.isSelected(),
+                    icmpEnabled.isSelected());
+        } catch (IllegalArgumentException exception) {
+            importStatusLabel.setText("Rule configuration error: " + exception.getMessage());
+            return null;
+        }
+    }
+
+    @FXML
     private void handleCancelImport() {
-        if (activeImport != null) {
-            activeImport.cancel(true);
+        if (activeImport != null && importCancellation != null) {
+            importCancellation.set(true);
+            cancelImportButton.setDisable(true);
+            importStatusLabel.textProperty().unbind();
+            importStatusLabel.setText("Cancelling import...");
         }
     }
 
@@ -347,8 +498,8 @@ public class MainDashboardController {
             return;
         }
         closed = true;
-        if (activeImport != null) {
-            activeImport.cancel(true);
+        if (importCancellation != null) {
+            importCancellation.set(true);
         }
         importStatusLabel.textProperty().unbind();
         importProgressBar.progressProperty().unbind();
@@ -371,17 +522,163 @@ public class MainDashboardController {
         LOGGER.info("Application theme changed to {}", darkThemeToggle.isSelected() ? "dark" : "light");
     }
 
-    private void setImportRunning(boolean running) {
-        chooseFileButton.setDisable(running);
-        startImportButton.setDisable(running || selectedFile == null);
-        cancelImportButton.setDisable(!running);
-        portScanEnabled.setDisable(running);
-        synEnabled.setDisable(running);
-        icmpEnabled.setDisable(running);
-        portScanThreshold.setDisable(running);
-        synThreshold.setDisable(running);
-        icmpThreshold.setDisable(running);
-        observationWindow.setDisable(running);
+    private void setControlsBusy(boolean busy) {
+        chooseFileButton.setDisable(busy || !persistenceReady);
+        startImportButton.setDisable(busy || !persistenceReady || selectedFile == null);
+        saveRulesButton.setDisable(busy || !persistenceReady);
+        cancelImportButton.setDisable(activeImport == null
+                || importCancellation != null && importCancellation.get());
+        portScanEnabled.setDisable(busy);
+        synEnabled.setDisable(busy);
+        icmpEnabled.setDisable(busy);
+        portScanThreshold.setDisable(busy);
+        synThreshold.setDisable(busy);
+        icmpThreshold.setDisable(busy);
+        observationWindow.setDisable(busy);
+    }
+
+    private void applyRuleSettings(DetectionRuleSettings settings) {
+        portScanThreshold.setText(Long.toString(settings.portScanThreshold()));
+        synThreshold.setText(Long.toString(settings.synThreshold()));
+        icmpThreshold.setText(Long.toString(settings.icmpThreshold()));
+        observationWindow.setText(Long.toString(settings.observationWindowSeconds()));
+        portScanEnabled.setSelected(settings.portScanEnabled());
+        synEnabled.setSelected(settings.synEnabled());
+        icmpEnabled.setSelected(settings.icmpEnabled());
+    }
+
+    private void loadDashboardAsync() {
+        Task<DashboardSnapshot> task = new Task<>() {
+            @Override
+            protected DashboardSnapshot call() {
+                return loadDashboardState();
+            }
+        };
+        task.setOnSucceeded(event -> {
+            if (closed) {
+                return;
+            }
+            applyDashboardState(task.getValue());
+            persistenceReady = true;
+            databaseStatusLabel.setText("DATABASE READY");
+            importStatusLabel.setText("Persistent alert and import history loaded.");
+            setControlsBusy(false);
+        });
+        task.setOnFailed(event -> handleDatabaseUnavailable(task.getException()));
+        importExecutor.execute(task);
+    }
+
+    private void refreshDashboardAsync() {
+        if (closed || persistence == null) {
+            return;
+        }
+        Task<DashboardSnapshot> task = new Task<>() {
+            @Override
+            protected DashboardSnapshot call() {
+                return loadDashboardState();
+            }
+        };
+        task.setOnSucceeded(event -> {
+            if (!closed) {
+                applyDashboardState(task.getValue());
+            }
+        });
+        task.setOnFailed(event -> {
+            if (!closed) {
+                handleDatabaseUnavailable(task.getException());
+            }
+        });
+        importExecutor.execute(task);
+    }
+
+    private DashboardSnapshot loadDashboardState() {
+        return new DashboardSnapshot(
+                persistence.findRecent(500),
+                persistence.recentImports(100),
+                persistence.countAlerts(),
+                persistence.countCriticalAlerts());
+    }
+
+    private void applyDashboardState(DashboardSnapshot state) {
+        alerts.setAll(state.alerts());
+        importHistory.setAll(state.imports());
+        alertsValue.setText(Long.toString(state.alertCount()));
+        criticalAlertsValue.setText(Long.toString(state.criticalAlertCount()));
+    }
+
+    private void showImportAlerts(UUID importId) {
+        if (closed || !persistenceReady) {
+            return;
+        }
+        Task<List<IntrusionAlert>> task = new Task<>() {
+            @Override
+            protected List<IntrusionAlert> call() {
+                return persistence.findByImport(importId, 500);
+            }
+        };
+        task.setOnSucceeded(event -> {
+            if (closed) {
+                return;
+            }
+            ImportSession selected = importHistoryTable.getSelectionModel().getSelectedItem();
+            if (selected != null && selected.id().equals(importId)) {
+                alerts.setAll(task.getValue());
+            }
+        });
+        task.setOnFailed(event -> {
+            if (!closed) {
+                Throwable failure = task.getException();
+                importStatusLabel.setText("Unable to load alerts for this import: "
+                        + (failure == null ? "Unknown database error" : failure.getMessage()));
+                LOGGER.error("Unable to load alerts for import {}", importId, failure);
+            }
+        });
+        importExecutor.execute(task);
+    }
+
+    private void loadLatestAlertsAsync() {
+        Task<List<IntrusionAlert>> task = new Task<>() {
+            @Override
+            protected List<IntrusionAlert> call() {
+                return persistence.findRecent(500);
+            }
+        };
+        task.setOnSucceeded(event -> {
+            if (!closed) {
+                alerts.setAll(task.getValue());
+            }
+        });
+        task.setOnFailed(event -> {
+            if (!closed) {
+                Throwable failure = task.getException();
+                importStatusLabel.setText("Unable to load recent alerts: "
+                        + (failure == null ? "Unknown database error" : failure.getMessage()));
+                LOGGER.error("Unable to load recent persisted alerts", failure);
+            }
+        });
+        importExecutor.execute(task);
+    }
+
+    private void handleDatabaseUnavailable(Throwable failure) {
+        if (closed) {
+            return;
+        }
+        persistenceReady = false;
+        String message = failure == null ? "Unknown database error" : failure.getMessage();
+        databaseStatusLabel.setText("DATABASE ERROR");
+        importStatusLabel.setText("Persistent storage unavailable; imports are disabled: " + message);
+        LOGGER.error("Persistent storage became unavailable", failure);
+        setControlsBusy(false);
+    }
+
+    private record DashboardSnapshot(
+            List<IntrusionAlert> alerts,
+            List<ImportSession> imports,
+            long alertCount,
+            long criticalAlertCount) {
+    }
+
+    private record ImportTaskResult(ImportSummary summary) {
     }
 
     private static String formatBytes(long bytes) {

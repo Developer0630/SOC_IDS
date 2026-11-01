@@ -2,9 +2,9 @@
 
 ## Processing flow
 
-`PcapFileReader` streams classic PCAP records from disk. `PcapPacketParser` uses Pcap4J's static packet factory to normalize Ethernet/IP/TCP/UDP/ICMP/DNS metadata into `NetworkPacket`. `PcapImportService` sends each parsed packet directly through the bounded `TrafficAggregator` and `DetectionEngine` on the JavaFX `Task` worker. The service stores generated `IntrusionAlert` records in `InMemoryAlertRepository` only after a complete import. It returns a bounded recent-traffic sample and the import summary to the controller, which updates JavaFX observable lists on the JavaFX Application Thread.
+`PcapFileReader` streams classic PCAP records from disk. `PcapPacketParser` uses Pcap4J's static packet factory to normalize Ethernet/IP/TCP/UDP/ICMP/DNS metadata into `NetworkPacket`. `PcapImportService` sends each parsed packet directly through the bounded `TrafficAggregator` and `DetectionEngine` on the JavaFX `Task` worker. On success, `SqliteImportPersistence` inserts the bounded alert batch and marks its import session `COMPLETED` in one SQLite transaction. The controller refreshes bounded observable lists from persistence on the worker executor, then applies results on the JavaFX Application Thread.
 
-There is no intermediate unbounded queue: file reading, parsing, aggregation, and rule evaluation are sequential on one worker thread. Progress is reported in batches, traffic display is limited to 500 records, alert history is limited to 5,000 records, and cancellation prevents partial alert persistence.
+There is no intermediate unbounded queue: file reading, parsing, aggregation, and rule evaluation are sequential on one worker thread. Progress is reported in batches, traffic display is limited to 500 records, and dashboard queries load at most 500 alerts and 100 import sessions at a time. Cancellation prevents partial alert persistence; a session row remains with `CANCELLED`. Import errors are recorded as `FAILED`. A `RUNNING` session left by an abrupt shutdown is changed to `INTERRUPTED` at the next startup.
 
 ## Input support and validation
 
@@ -30,6 +30,18 @@ Aggregation is bounded to 10,000 source IPs, 4,096 timestamp buckets per source,
 
 ## Persistence and limitations
 
-The import retains at most 2,000 generated alerts for persistence and reports further findings omitted by this per-import limit. The alert repository is an in-memory, bounded implementation of the repository interface and retains up to 5,000 alerts across the current application session. Alerts and import data are lost when the application exits; durable database persistence and alert workflow states beyond `NEW` are not implemented. The dashboard displays only the most recent 500 successfully parsed packet records and the repository's retained session alerts.
+The import retains at most 2,000 generated alerts for persistence and reports further findings omitted by this per-import limit. The persistent repository does not prune historical records. The dashboard queries the most recent 500 alerts or up to 500 alerts for a selected import, and displays the most recent 100 import sessions. The in-memory repository remains only as a test implementation.
+
+## SQLite persistence
+
+Xerial SQLite JDBC is used without an ORM. The default database is `%LOCALAPPDATA%\SentinelNOC\sentinel_noc.db` on Windows, or `~/.local/share/SentinelNOC/sentinel_noc.db` elsewhere. Override the location with the JVM property `sentinel.db.path`. `SqliteDatabase` opens a new connection per operation, enables foreign keys and a bounded busy timeout, and stores the schema version in `PRAGMA user_version`. Schema version 1 creates:
+
+- `import_sessions`, the parent record for every PCAP import.
+- `intrusion_alerts`, with a foreign key to its import session, event timestamp seconds/nanoseconds, rule identity, severity, description, evidence, and status.
+- `detection_rule_configs`, with one row per supported rule.
+
+Creating or completing an import uses transactions. Completion updates the session and inserts its alerts atomically; on a failure the transaction rolls back and the service records `FAILED` if storage remains available. Session `alerts_created` records detection findings generated, while only up to 2,000 alert rows are stored for that import. The only configured thresholds/time window are saved through **Save Rules** or immediately before an import. Missing rule rows are initialized with the existing defaults; partial or inconsistent stored configurations are reported rather than silently replaced. If the database cannot initialize, the dashboard remains available in degraded mode but disables imports.
+
+Before a file-copy backup or restore, close the application. Copy `sentinel_noc.db` to a safe location; restore by closing the app and replacing the database file. Keep backups separate from the application data directory. No automatic cleanup or database reset is performed.
 
 Synthetic PCAP frames used by unit tests are generated in test code and are not production traffic or shipped sample captures.
