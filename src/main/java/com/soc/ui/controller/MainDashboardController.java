@@ -129,6 +129,7 @@ public class MainDashboardController {
     });
     private Path selectedFile;
     private Task<ImportSummary> activeImport;
+    private boolean closed;
 
     @FXML
     private void initialize() {
@@ -137,7 +138,8 @@ public class MainDashboardController {
         alertSourceColumn.setCellValueFactory(cell ->
                 new javafx.beans.property.SimpleStringProperty(cell.getValue().sourceAddress().orElse("—")));
         alertTypeColumn.setCellValueFactory(cell ->
-                new javafx.beans.property.SimpleStringProperty(cell.getValue().ruleId()));
+                new javafx.beans.property.SimpleStringProperty(
+                        cell.getValue().ruleId() + " · " + cell.getValue().ruleName()));
         severityColumn.setCellValueFactory(cell ->
                 new javafx.beans.property.SimpleObjectProperty<>(cell.getValue().severity()));
         severityColumn.setCellFactory(column -> new TableCell<>() {
@@ -208,7 +210,7 @@ public class MainDashboardController {
 
     @FXML
     private void handleStartImport() {
-        if (selectedFile == null || activeImport != null) {
+        if (closed || selectedFile == null || activeImport != null) {
             return;
         }
         DetectionRuleSettings ruleSettings;
@@ -249,6 +251,9 @@ public class MainDashboardController {
         importStatusLabel.textProperty().bind(task.messageProperty());
 
         task.setOnSucceeded(event -> {
+            if (closed) {
+                return;
+            }
             importStatusLabel.textProperty().unbind();
             ImportSummary result = task.getValue();
             traffic.setAll(result.trafficSample());
@@ -265,18 +270,40 @@ public class MainDashboardController {
                     + " unsupported, " + result.malformedPackets() + " malformed, "
                     + result.alertsGenerated() + " alerts generated, "
                     + result.latePacketsDropped() + " late packets excluded.");
+            if (result.aggregationCapacityDroppedPackets() > 0) {
+                importStatusLabel.setText(importStatusLabel.getText()
+                        + " " + result.aggregationCapacityDroppedPackets()
+                        + " packets excluded by aggregation capacity ("
+                        + result.aggregationEvictedSources() + " sources, "
+                        + result.aggregationEvictedBuckets() + " time buckets evicted).");
+            }
+            if (result.alertsOmittedByImportLimit() > 0) {
+                importStatusLabel.setText(importStatusLabel.getText()
+                        + " " + result.alertsOmittedByImportLimit()
+                        + " alerts omitted by the per-import alert limit.");
+            }
             importProgressBar.setProgress(1);
             activeImport = null;
             setImportRunning(false);
         });
         task.setOnCancelled(event -> {
+            if (closed) {
+                return;
+            }
             importStatusLabel.textProperty().unbind();
+            importProgressBar.progressProperty().unbind();
+            importProgressBar.setProgress(0);
             importStatusLabel.setText("Import cancelled. No partial alerts were saved.");
             activeImport = null;
             setImportRunning(false);
         });
         task.setOnFailed(event -> {
+            if (closed) {
+                return;
+            }
             importStatusLabel.textProperty().unbind();
+            importProgressBar.progressProperty().unbind();
+            importProgressBar.setProgress(0);
             Throwable failure = task.getException();
             String message = failure == null ? "Unknown import error" : failure.getMessage();
             importStatusLabel.setText("Import failed: " + message);
@@ -308,7 +335,7 @@ public class MainDashboardController {
         }
         Alert detail = new Alert(Alert.AlertType.INFORMATION);
         detail.setTitle("Detection evidence");
-        detail.setHeaderText(selected.ruleId() + " · " + selected.severity());
+        detail.setHeaderText(selected.ruleName() + " (" + selected.ruleId() + ") · " + selected.severity());
         detail.setContentText(selected.description() + "\n\n" + selected.evidence()
                 + "\n\nStatus: " + AlertStatus.NEW
                 + "\nImport ID: " + selected.importId());
@@ -316,9 +343,15 @@ public class MainDashboardController {
     }
 
     public void shutdown() {
+        if (closed) {
+            return;
+        }
+        closed = true;
         if (activeImport != null) {
             activeImport.cancel(true);
         }
+        importStatusLabel.textProperty().unbind();
+        importProgressBar.progressProperty().unbind();
         importExecutor.shutdownNow();
     }
 

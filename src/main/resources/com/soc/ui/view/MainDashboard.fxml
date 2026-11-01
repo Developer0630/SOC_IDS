@@ -27,15 +27,15 @@
             <Label text="NETWORK SECURITY" styleClass="brand-subtitle"/>
             <VBox spacing="4" styleClass="navigation">
                 <Button text="Dashboard" styleClass="nav-button, nav-button-active" maxWidth="Infinity"/>
-                <Button text="Network Monitoring" disable="true" styleClass="nav-button" maxWidth="Infinity"/>
-                <Button text="Live Traffic" disable="true" styleClass="nav-button" maxWidth="Infinity"/>
-                <Button text="Intrusion Alerts" disable="true" styleClass="nav-button" maxWidth="Infinity"/>
-                <Button text="Detection Rules" disable="true" styleClass="nav-button" maxWidth="Infinity"/>
-                <Button text="Packet Analysis" disable="true" styleClass="nav-button" maxWidth="Infinity"/>
-                <Button text="IP Watchlist" disable="true" styleClass="nav-button" maxWidth="Infinity"/>
-                <Button text="Reports &amp; Analytics" disable="true" styleClass="nav-button" maxWidth="Infinity"/>
-                <Button text="System Logs" disable="true" styleClass="nav-button" maxWidth="Infinity"/>
-                <Button text="Settings" disable="true" styleClass="nav-button" maxWidth="Infinity"/>
+                <Button text="Network Monitoring" disable="false" styleClass="nav-button" maxWidth="Infinity"/>
+                <Button text="Live Traffic" disable="false" styleClass="nav-button" maxWidth="Infinity"/>
+                <Button text="Intrusion Alerts" disable="false" styleClass="nav-button" maxWidth="Infinity"/>
+                <Button text="Detection Rules" disable="false" styleClass="nav-button" maxWidth="Infinity"/>
+                <Button text="Packet Analysis" disable="false" styleClass="nav-button" maxWidth="Infinity"/>
+                <Button text="IP Watchlist" disable="false" styleClass="nav-button" maxWidth="Infinity"/>
+                <Button text="Reports &amp; Analytics" disable="false" styleClass="nav-button" maxWidth="Infinity"/>
+                <Button text="System Logs" disable="false" styleClass="nav-button" maxWidth="Infinity"/>
+                <Button text="Settings" disable="false" styleClass="nav-button" maxWidth="Infinity"/>
             </VBox>
             <Region VBox.vgrow="ALWAYS"/>
             <Label text="Modules marked unavailable are not implemented yet."

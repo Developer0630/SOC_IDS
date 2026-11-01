@@ -25,10 +25,25 @@ class InMemoryAlertRepositoryTest {
         assertEquals(List.of(second, third), repository.findAll());
     }
 
+    @Test
+    void defaultRepositoryRetainsAtMostFiveThousandAlerts() {
+        InMemoryAlertRepository repository = new InMemoryAlertRepository();
+        List<IntrusionAlert> alerts = java.util.stream.IntStream.range(0, 5001)
+                .mapToObj(index -> alert(Instant.ofEpochSecond(index)))
+                .toList();
+
+        repository.saveAll(alerts);
+
+        assertEquals(5000, repository.findAll().size());
+        assertEquals(alerts.get(1), repository.findAll().get(0));
+        assertEquals(alerts.get(5000), repository.findAll().get(4999));
+    }
+
     private static IntrusionAlert alert(Instant timestamp) {
         return new IntrusionAlert(
                 UUID.randomUUID(), timestamp, Optional.empty(), Optional.empty(),
-                "TEST", RiskLevel.LOW, "Synthetic unit-test alert", "Synthetic evidence",
+                "TEST", "Synthetic test rule", RiskLevel.LOW,
+                "Synthetic unit-test alert", "Synthetic evidence",
                 AlertStatus.NEW, UUID.randomUUID());
     }
 }

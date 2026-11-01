@@ -44,6 +44,8 @@ Detection thresholds and the shared observation window (1–3,600 seconds) can b
 
 Alerts are suppressed per rule and source for 10 seconds of **PCAP event time**, not wall-clock processing time. Out-of-order packets within the retained window are aggregated using their capture timestamps. Packets arriving later than the current source watermark minus the retention window are excluded from rule statistics and counted as late drops.
 
+Rule metrics trigger when they are greater than or equal to their configured threshold. Evidence includes the rule ID/name, source, observed metric, threshold, and observation-window duration; the alert timestamp is the triggering packet's PCAP timestamp. Findings are heuristics, not confirmation that a host or packet is malicious.
+
 ## Resource and storage limits
 
 - Maximum file size: 512 MiB.
@@ -51,6 +53,8 @@ Alerts are suppressed per rule and source for 10 seconds of **PCAP event time**,
 - Maximum captured bytes per packet: 16 MiB.
 - At most 500 recent packets are displayed per import.
 - Traffic aggregation tracks at most 10,000 sources, 4,096 timestamp buckets per source, and 100,000 buckets total.
+- At most 2,000 generated alerts are retained for one import. The import summary reports additional findings omitted by that limit.
+- Aggregation capacity evictions and late packet exclusions are counted and shown in the import summary; capacity eviction can reduce detection visibility.
 - The in-memory alert repository retains at most 5,000 alerts for the current application session; it is not durable storage.
 
 Input packet payloads are parsed only as protocol metadata. The application does not execute payloads, change firewall configuration, or transmit capture data to external services.

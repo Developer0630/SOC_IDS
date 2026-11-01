@@ -101,4 +101,15 @@ class PcapPacketParserTest {
         assertEquals(PacketParseResult.Status.MALFORMED, result.status());
         assertFalse(result.packet().isPresent());
     }
+
+    @Test
+    void marksTruncatedIpTransportDataAsMalformed() {
+        byte[] frame = TestPcapFixtures.truncatedIpv4TcpFrame();
+
+        PacketParseResult result =
+                parser.parse(new PcapPacketRecord(Instant.EPOCH, frame, 1, frame.length));
+
+        assertEquals(PacketParseResult.Status.MALFORMED, result.status());
+        assertTrue(result.packet().isEmpty());
+    }
 }

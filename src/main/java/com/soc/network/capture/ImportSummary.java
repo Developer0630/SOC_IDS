@@ -13,6 +13,11 @@ public record ImportSummary(
         long alertsGenerated,
         int trackedSources,
         long latePacketsDropped,
+        long aggregationCapacityDroppedPackets,
+        long aggregationEvictedSources,
+        long aggregationEvictedBuckets,
+        int alertsSubmittedToRepository,
+        long alertsOmittedByImportLimit,
         List<IntrusionAlert> alerts,
         List<NetworkPacket> trafficSample) {
 

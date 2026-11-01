@@ -25,6 +25,9 @@ public final class TrafficAggregator {
     private final int maxTotalBuckets;
     private final LinkedHashMap<String, SourceState> sources = new LinkedHashMap<>(16, 0.75f, true);
     private long latePacketsDropped;
+    private long capacityDroppedPackets;
+    private long capacityEvictedSources;
+    private long capacityEvictedBuckets;
     private int totalBuckets;
 
     public TrafficAggregator(Duration retention) {
@@ -95,8 +98,7 @@ public final class TrafficAggregator {
             bucket.icmpPacketCount++;
         }
         while (state.buckets.size() > maxBucketsPerSource) {
-            state.buckets.pollFirstEntry();
-            totalBuckets--;
+            evictOldestBucket(state);
         }
     }
 
@@ -136,9 +138,24 @@ public final class TrafficAggregator {
         return latePacketsDropped;
     }
 
+    public long capacityDroppedPackets() {
+        return capacityDroppedPackets;
+    }
+
+    public long capacityEvictedSources() {
+        return capacityEvictedSources;
+    }
+
+    public long capacityEvictedBuckets() {
+        return capacityEvictedBuckets;
+    }
+
     public void clear() {
         sources.clear();
         latePacketsDropped = 0;
+        capacityDroppedPackets = 0;
+        capacityEvictedSources = 0;
+        capacityEvictedBuckets = 0;
         totalBuckets = 0;
     }
 
@@ -153,15 +170,27 @@ public final class TrafficAggregator {
             }
         }
         if (!currentState.buckets.isEmpty()) {
-            currentState.buckets.pollFirstEntry();
-            totalBuckets--;
+            evictOldestBucket(currentState);
         }
     }
 
     private void removeSource(String sourceAddress) {
         SourceState removed = sources.remove(sourceAddress);
         if (removed != null) {
+            capacityEvictedSources++;
+            capacityEvictedBuckets += removed.buckets.size();
+            capacityDroppedPackets += removed.buckets.values().stream()
+                    .mapToLong(bucket -> bucket.packetCount).sum();
             totalBuckets -= removed.buckets.size();
+        }
+    }
+
+    private void evictOldestBucket(SourceState state) {
+        Map.Entry<Instant, Bucket> removed = state.buckets.pollFirstEntry();
+        if (removed != null) {
+            capacityEvictedBuckets++;
+            capacityDroppedPackets += removed.getValue().packetCount;
+            totalBuckets--;
         }
     }
 

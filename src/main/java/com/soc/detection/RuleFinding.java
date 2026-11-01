@@ -6,6 +6,7 @@ import java.util.Optional;
 
 public record RuleFinding(
         String ruleId,
+        String ruleName,
         String description,
         RiskLevel severity,
         String evidence,

@@ -88,6 +88,7 @@ public final class DetectionEngine {
                         finding.sourceAddress(),
                         finding.destinationAddress(),
                         finding.ruleId(),
+                        finding.ruleName(),
                         finding.severity(),
                         finding.description(),
                         finding.evidence(),

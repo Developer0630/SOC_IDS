@@ -15,6 +15,7 @@ import java.util.concurrent.CancellationException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PcapFileReaderTest {
     @TempDir
@@ -48,7 +49,7 @@ class PcapFileReaderTest {
                 file, PcapReadConfig.defaults(), () -> false, packet -> {
                 }, (read, size, count) -> {
                 }));
-        org.junit.jupiter.api.Assertions.assertTrue(error.getMessage().contains("PCAPNG"));
+        assertTrue(error.getMessage().contains("PCAPNG"));
     }
 
     @Test
@@ -101,6 +102,31 @@ class PcapFileReaderTest {
     }
 
     @Test
+    void distinguishesMissingEmptyAndInvalidHeaderFiles() throws IOException {
+        Path missing = temporaryDirectory.resolve("missing.pcap");
+        assertThrows(IOException.class, () -> new PcapFileReader().read(
+                missing, PcapReadConfig.defaults(), () -> false, packet -> {
+                }, (read, size, count) -> {
+                }));
+
+        Path empty = temporaryDirectory.resolve("physically-empty.pcap");
+        Files.write(empty, new byte[0]);
+        IOException emptyError = assertThrows(IOException.class, () -> new PcapFileReader().read(
+                empty, PcapReadConfig.defaults(), () -> false, packet -> {
+                }, (read, size, count) -> {
+                }));
+        assertTrue(emptyError.getMessage().contains("too small"));
+
+        Path invalid = temporaryDirectory.resolve("bad-header.pcap");
+        Files.write(invalid, new byte[24]);
+        IOException headerError = assertThrows(IOException.class, () -> new PcapFileReader().read(
+                invalid, PcapReadConfig.defaults(), () -> false, packet -> {
+                }, (read, size, count) -> {
+                }));
+        assertTrue(headerError.getMessage().contains("signature"));
+    }
+
+    @Test
     void rejectsTruncatedPacketRecordData() throws IOException {
         ByteBuffer data = ByteBuffer.allocate(24 + 16 + 5).order(ByteOrder.LITTLE_ENDIAN);
         data.put(new byte[]{(byte) 0xD4, (byte) 0xC3, (byte) 0xB2, (byte) 0xA1});
@@ -114,6 +140,39 @@ class PcapFileReaderTest {
                 file, PcapReadConfig.defaults(), () -> false, packet -> {
                 }, (read, size, count) -> {
                 }));
+    }
+
+    @Test
+    void rejectsTruncatedRecordHeaderAndInvalidLengthsAndTimestampFraction() throws IOException {
+        byte[] global = globalHeader(ByteOrder.LITTLE_ENDIAN, 65535, 1);
+        Path shortRecordHeader = temporaryDirectory.resolve("short-record-header.pcap");
+        byte[] shortHeaderData = java.util.Arrays.copyOf(global, global.length + 8);
+        Files.write(shortRecordHeader, shortHeaderData);
+        assertTrue(assertThrows(IOException.class, () -> new PcapFileReader().read(
+                shortRecordHeader, PcapReadConfig.defaults(), () -> false, packet -> {
+                }, (read, size, count) -> {
+                })).getMessage().contains("Truncated PCAP packet header"));
+
+        Path capturedOverLimit = temporaryDirectory.resolve("captured-over-limit.pcap");
+        Files.write(capturedOverLimit, recordFile(global, 1, 0, 65, 65, new byte[65]));
+        assertTrue(assertThrows(IOException.class, () -> new PcapFileReader().read(
+                capturedOverLimit, new PcapReadConfig(1024, 10, 64), () -> false, packet -> {
+                }, (read, size, count) -> {
+                })).getMessage().contains("captured packet length"));
+
+        Path originalShorter = temporaryDirectory.resolve("original-shorter.pcap");
+        Files.write(originalShorter, recordFile(global, 1, 0, 10, 9, new byte[10]));
+        assertTrue(assertThrows(IOException.class, () -> new PcapFileReader().read(
+                originalShorter, PcapReadConfig.defaults(), () -> false, packet -> {
+                }, (read, size, count) -> {
+                })).getMessage().contains("Original packet length"));
+
+        Path badFraction = temporaryDirectory.resolve("bad-fraction.pcap");
+        Files.write(badFraction, recordFile(global, 1, 1_000_000, 1, 1, new byte[1]));
+        assertTrue(assertThrows(IOException.class, () -> new PcapFileReader().read(
+                badFraction, PcapReadConfig.defaults(), () -> false, packet -> {
+                }, (read, size, count) -> {
+                })).getMessage().contains("timestamp fraction"));
     }
 
     @Test
@@ -133,6 +192,35 @@ class PcapFileReaderTest {
     }
 
     @Test
+    void acceptsExactlyTheConfiguredPacketLimitAndReportsBatchedProgress() throws IOException {
+        byte[][] frames = new byte[2048][];
+        java.util.Arrays.setAll(frames, index -> TestPcapFixtures.arpFrame());
+        Path capture = TestPcapFixtures.writeCapture(
+                temporaryDirectory.resolve("exact-limit.pcap"), frames);
+        List<Long> reportedCounts = new ArrayList<>();
+
+        PcapFileReader.ReadSummary result = new PcapFileReader().read(
+                capture,
+                new PcapReadConfig(Files.size(capture), 2048, 1024),
+                () -> false,
+                packet -> {
+                },
+                (bytes, size, count) -> reportedCounts.add(count));
+
+        assertEquals(2048, result.packetCount());
+        assertEquals(List.of(2048L, 2048L), reportedCounts);
+    }
+
+    @Test
+    void productionDefaultsKeepDocumentedResourceLimits() {
+        PcapReadConfig config = PcapReadConfig.defaults();
+
+        assertEquals(512L * 1024 * 1024, config.maxFileBytes());
+        assertEquals(1_000_000, config.maxPackets());
+        assertEquals(16 * 1024 * 1024, config.maxCapturedPacketBytes());
+    }
+
+    @Test
     void rejectsUnsupportedLinkType() throws IOException {
         byte[] frame = TestPcapFixtures.tcpFrame(1, 2, 2);
         ByteBuffer data = ByteBuffer.allocate(24 + 16 + frame.length).order(ByteOrder.LITTLE_ENDIAN);
@@ -147,5 +235,27 @@ class PcapFileReaderTest {
                 file, PcapReadConfig.defaults(), () -> false, packet -> {
                 }, (read, size, count) -> {
                 }));
+    }
+
+    private static byte[] globalHeader(ByteOrder byteOrder, int snapshotLength, int linkType) {
+        ByteBuffer data = ByteBuffer.allocate(24).order(byteOrder);
+        if (byteOrder == ByteOrder.LITTLE_ENDIAN) {
+            data.put(new byte[]{(byte) 0xD4, (byte) 0xC3, (byte) 0xB2, (byte) 0xA1});
+        } else {
+            data.put(new byte[]{(byte) 0xA1, (byte) 0xB2, (byte) 0xC3, (byte) 0xD4});
+        }
+        data.putShort((short) 2).putShort((short) 4);
+        data.putInt(0).putInt(0).putInt(snapshotLength).putInt(linkType);
+        return data.array();
+    }
+
+    private static byte[] recordFile(
+            byte[] globalHeader, int seconds, int fraction,
+            int capturedLength, int originalLength, byte[] payload) {
+        ByteBuffer data = ByteBuffer.allocate(globalHeader.length + 16 + payload.length)
+                .order(ByteOrder.LITTLE_ENDIAN);
+        data.put(globalHeader);
+        data.putInt(seconds).putInt(fraction).putInt(capturedLength).putInt(originalLength).put(payload);
+        return data.array();
     }
 }

@@ -96,6 +96,9 @@ public final class PcapImportService {
                     }
                 }
             }, progress);
+            if (cancelled.getAsBoolean()) {
+                throw new CancellationException("PCAP import cancelled");
+            }
         } catch (IOException | RuntimeException exception) {
             if (exception instanceof CancellationException) {
                 throw exception;
@@ -117,6 +120,11 @@ public final class PcapImportService {
                 counters[0], counters[1], counters[2], counters[3], counters[4],
                 detectionEngine.aggregator().trackedSourceCount(),
                 detectionEngine.aggregator().latePacketsDropped(),
+                detectionEngine.aggregator().capacityDroppedPackets(),
+                detectionEngine.aggregator().capacityEvictedSources(),
+                detectionEngine.aggregator().capacityEvictedBuckets(),
+                alerts.size(),
+                counters[4] - alerts.size(),
                 alerts,
                 List.copyOf(traffic));
     }

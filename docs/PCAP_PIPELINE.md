@@ -12,7 +12,7 @@ The reader supports classic PCAP v2.4 in little- or big-endian byte order and mi
 
 Pcap4J 1.8.2 has native-backed `PcapHandle.openOffline` APIs; the importer intentionally does not use them. The file reader is pure Java and packet decoding uses the existing static packet factory dependency, so offline imports do not require a native capture driver.
 
-Packets shorter than an Ethernet header or frames that the parser cannot decode are counted as malformed. Non-IP Ethernet packets are counted as unsupported. These packets are not treated as alerts. Packet payloads are not stored or executed. DNS question metadata is included only for successfully decoded DNS requests.
+Packets shorter than an Ethernet header, IP packets whose declared length exceeds their captured bytes, or frames that the parser cannot decode are counted as malformed. Non-IP Ethernet packets are counted as unsupported. These packets are not treated as alerts. Packet payloads are not stored or executed. DNS question metadata is included only for successfully decoded DNS requests.
 
 ## Event-time aggregation and rules
 
@@ -24,10 +24,12 @@ Implemented rules:
 - `SYN_RATE`: observed bare TCP SYN packets (`SYN=1`, `ACK=0`) per source; heuristic only.
 - `ICMP_RATE`: observed ICMP and ICMPv6 packets per source; high ICMP volume is not inherently malicious.
 
-All rules have validated positive thresholds, enabled state, severity, and a shared configurable observation window from 1 to 3,600 seconds (10 seconds by default). Findings include rule ID, source, observed metric, configured threshold, and window. Suppression is keyed by rule and source and uses event time with a 10-second cooldown.
+All rules have validated positive thresholds, enabled state, severity, and a shared configurable observation window from 1 to 3,600 seconds (10 seconds by default). A rule triggers when its observed metric is greater than or equal to the configured threshold. Findings include rule ID and name, source, observed metric, configured threshold, and window; the alert timestamp is the event time of the packet that caused the threshold to be met. Suppression is keyed by rule and source and uses event time with a 10-second cooldown.
+
+Aggregation is bounded to 10,000 source IPs, 4,096 timestamp buckets per source, and 100,000 buckets total. When those limits require eviction, evicted sources/buckets and the number of packets dropped from aggregation are included in `ImportSummary`; evicted data is not evaluated again. Late packet drops are counted separately. These exclusions can reduce detection visibility and should be considered when interpreting a clean result.
 
 ## Persistence and limitations
 
-The alert repository is an in-memory, bounded implementation of the repository interface. Alerts and import data are lost when the application exits; durable database persistence and alert workflow states beyond `NEW` are not implemented. The dashboard displays only the most recent 500 successfully parsed packet records and up to 5,000 session alerts.
+The import retains at most 2,000 generated alerts for persistence and reports further findings omitted by this per-import limit. The alert repository is an in-memory, bounded implementation of the repository interface and retains up to 5,000 alerts across the current application session. Alerts and import data are lost when the application exits; durable database persistence and alert workflow states beyond `NEW` are not implemented. The dashboard displays only the most recent 500 successfully parsed packet records and the repository's retained session alerts.
 
 Synthetic PCAP frames used by unit tests are generated in test code and are not production traffic or shipped sample captures.

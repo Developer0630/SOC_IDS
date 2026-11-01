@@ -5,22 +5,37 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 
 public final class TestPcapFixtures {
+    public record TimedFrame(Instant timestamp, byte[] frame) {
+        public TimedFrame {
+            frame = frame.clone();
+        }
+
+        @Override
+        public byte[] frame() {
+            return frame.clone();
+        }
+    }
+
     private TestPcapFixtures() {
     }
 
     public static byte[] tcpFrame(int sourcePort, int destinationPort, int flags) {
+        return tcpFrame("192.0.2.10", sourcePort, destinationPort, flags);
+    }
+
+    public static byte[] tcpFrame(String sourceAddress, int sourcePort, int destinationPort, int flags) {
         byte[] frame = ethernetFrame(0x0800, 40);
         int ip = 14;
         frame[ip] = 0x45;
         putShort(frame, ip + 2, 40);
         frame[ip + 8] = 64;
         frame[ip + 9] = 6;
-        frame[ip + 12] = (byte) 192;
-        frame[ip + 13] = 0;
-        frame[ip + 14] = 2;
-        frame[ip + 15] = 10;
+        writeIpv4Address(frame, ip + 12, sourceAddress);
         frame[ip + 16] = (byte) 198;
         frame[ip + 17] = 51;
         frame[ip + 18] = 100;
@@ -67,16 +82,17 @@ public final class TestPcapFixtures {
     }
 
     public static byte[] icmpFrame() {
+        return icmpFrame("192.0.2.10");
+    }
+
+    public static byte[] icmpFrame(String sourceAddress) {
         byte[] frame = ethernetFrame(0x0800, 28);
         int ip = 14;
         frame[ip] = 0x45;
         putShort(frame, ip + 2, 28);
         frame[ip + 8] = 64;
         frame[ip + 9] = 1;
-        frame[ip + 12] = (byte) 192;
-        frame[ip + 13] = 0;
-        frame[ip + 14] = 2;
-        frame[ip + 15] = 10;
+        writeIpv4Address(frame, ip + 12, sourceAddress);
         frame[ip + 16] = (byte) 198;
         frame[ip + 17] = 51;
         frame[ip + 18] = 100;
@@ -121,19 +137,40 @@ public final class TestPcapFixtures {
         return new byte[]{0, 1, 2, 3, 4};
     }
 
+    public static byte[] truncatedIpv4TcpFrame() {
+        byte[] frame = ethernetFrame(0x0800, 20);
+        frame[14] = 0x45;
+        putShort(frame, 16, 40);
+        frame[22] = 64;
+        frame[23] = 6;
+        writeIpv4Address(frame, 26, "192.0.2.10");
+        writeIpv4Address(frame, 30, "198.51.100.20");
+        return frame;
+    }
+
     public static Path writeCapture(Path path, byte[]... frames) throws IOException {
-        int total = 24;
+        List<TimedFrame> packets = new ArrayList<>(frames.length);
+        Instant timestamp = Instant.ofEpochSecond(1_700_000_000L, 123_456_000);
         for (byte[] frame : frames) {
-            total += 16 + frame.length;
+            packets.add(new TimedFrame(timestamp, frame));
+            timestamp = timestamp.plusNanos(1_000);
+        }
+        return writeTimedCapture(path, packets.toArray(TimedFrame[]::new));
+    }
+
+    public static Path writeTimedCapture(Path path, TimedFrame... frames) throws IOException {
+        int total = 24;
+        for (TimedFrame frame : frames) {
+            total += 16 + frame.frame().length;
         }
         ByteBuffer data = ByteBuffer.allocate(total).order(ByteOrder.LITTLE_ENDIAN);
         data.put(new byte[]{(byte) 0xD4, (byte) 0xC3, (byte) 0xB2, (byte) 0xA1});
         data.putShort((short) 2).putShort((short) 4);
         data.putInt(0).putInt(0).putInt(65535).putInt(1);
-        long second = 1_700_000_000L;
-        int fraction = 123_456;
-        for (byte[] frame : frames) {
-            data.putInt((int) second).putInt(fraction++);
+        for (TimedFrame packet : frames) {
+            byte[] frame = packet.frame();
+            data.putInt((int) packet.timestamp().getEpochSecond())
+                    .putInt(packet.timestamp().getNano() / 1_000);
             data.putInt(frame.length).putInt(frame.length).put(frame);
         }
         Files.write(path, data.array());
@@ -153,6 +190,20 @@ public final class TestPcapFixtures {
     private static void putShort(byte[] target, int offset, int value) {
         target[offset] = (byte) (value >>> 8);
         target[offset + 1] = (byte) value;
+    }
+
+    private static void writeIpv4Address(byte[] target, int offset, String address) {
+        String[] parts = address.split("\\.");
+        if (parts.length != 4) {
+            throw new IllegalArgumentException("Expected an IPv4 address");
+        }
+        for (int i = 0; i < parts.length; i++) {
+            int octet = Integer.parseInt(parts[i]);
+            if (octet < 0 || octet > 255) {
+                throw new IllegalArgumentException("Invalid IPv4 octet");
+            }
+            target[offset + i] = (byte) octet;
+        }
     }
 
     private static byte[] dnsName(String domain) {

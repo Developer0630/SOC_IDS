@@ -11,6 +11,7 @@ public record IntrusionAlert(
         Optional<String> sourceAddress,
         Optional<String> destinationAddress,
         String ruleId,
+        String ruleName,
         RiskLevel severity,
         String description,
         String evidence,
@@ -24,6 +25,9 @@ public record IntrusionAlert(
         destinationAddress = Objects.requireNonNull(destinationAddress, "destinationAddress");
         if (ruleId == null || ruleId.isBlank()) {
             throw new IllegalArgumentException("Rule ID cannot be blank");
+        }
+        if (ruleName == null || ruleName.isBlank()) {
+            throw new IllegalArgumentException("Rule name cannot be blank");
         }
         Objects.requireNonNull(severity, "severity");
         if (description == null || description.isBlank()) {

@@ -44,10 +44,16 @@ public final class PcapPacketParser {
             Optional<String> destination;
             if (packet.contains(IpV4Packet.class)) {
                 IpV4Packet ip = packet.get(IpV4Packet.class);
+                if (ip.getHeader().getTotalLengthAsInt() > ip.getRawData().length) {
+                    return PacketParseResult.malformed();
+                }
                 source = Optional.of(ip.getHeader().getSrcAddr().getHostAddress());
                 destination = Optional.of(ip.getHeader().getDstAddr().getHostAddress());
             } else {
                 IpV6Packet ip = packet.get(IpV6Packet.class);
+                if (40 + ip.getHeader().getPayloadLengthAsInt() > ip.getRawData().length) {
+                    return PacketParseResult.malformed();
+                }
                 source = Optional.of(ip.getHeader().getSrcAddr().getHostAddress());
                 destination = Optional.of(ip.getHeader().getDstAddr().getHostAddress());
             }

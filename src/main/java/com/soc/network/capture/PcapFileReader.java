@@ -43,6 +43,9 @@ public final class PcapFileReader {
         Objects.requireNonNull(cancelled, "cancelled");
         Objects.requireNonNull(consumer, "consumer");
         Objects.requireNonNull(progress, "progress");
+        if (cancelled.getAsBoolean()) {
+            throw new CancellationException("PCAP import cancelled");
+        }
 
         if (!Files.isRegularFile(path) || !Files.isReadable(path)) {
             throw new IOException("Selected file does not exist or cannot be read");
@@ -120,6 +123,9 @@ public final class PcapFileReader {
                 }
             }
 
+            if (cancelled.getAsBoolean()) {
+                throw new CancellationException("PCAP import cancelled");
+            }
             progress.update(file.getFilePointer(), fileSize, packetCount);
             return new ReadSummary(packetCount, header.linkType());
         } catch (EOFException exception) {
