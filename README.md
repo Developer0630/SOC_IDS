@@ -8,22 +8,42 @@ Sentinel NOC is a JavaFX desktop IDS prototype with an offline PCAP import and h
 - Maven 3.8+
 - Windows, Linux, or macOS with a JavaFX-supported desktop
 
-Pcap4J 1.8.2 is used to decode packet metadata. The offline reader is implemented in Java and does not require Npcap/libpcap. No new dependencies are needed for PCAP import.
-SQLite JDBC stores import history, alerts, and detection-rule settings locally.
+Pcap4J 1.8.2 is used to decode packet metadata. The offline reader is implemented in Java and does not require Npcap/libpcap. MySQL Connector/J 9.2.0 stores import history, alerts, and detection-rule settings through the MySQL wire
+protocol. MariaDB 10.4.32/XAMPP is the selected target and has been verified by the repository's server-backed
+integration tests. This verification does not include production rollout or manual GUI validation.
 
 ## Run
 
-From the repository root:
+Install MariaDB 10.4.32 (XAMPP), then initialize the database and application account using
+[database/mysql/init.sql](database/mysql/init.sql). Replace its password placeholder locally before running it
+with a MariaDB administrator account. Do not configure Sentinel NOC with the MariaDB `root` account.
+
+Set the connection configuration in the environment before launching. The password is required and is never
+stored in the repository:
 
 ```powershell
+$env:SENTINEL_DB_URL = "jdbc:mysql://localhost:3306/sentinel_noc?connectTimeout=5000&socketTimeout=10000&tcpKeepAlive=true&serverTimezone=UTC"
+$env:SENTINEL_DB_USER = "sentinel_app"
+$env:SENTINEL_DB_PASSWORD = "<your-local-application-password>"
 mvn javafx:run
 ```
 
-Run the unit tests with:
+`SENTINEL_DB_URL` and `SENTINEL_DB_USER` have local defaults; `SENTINEL_DB_PASSWORD` must be set. If MariaDB,
+credentials, schema privileges, or schema migration are unavailable, the dashboard reports the storage failure
+and disables import. There is no SQLite or in-memory fallback in the application.
 
 ```powershell
 mvn clean test
 ```
+
+MariaDB integration tests require a dedicated database whose name ends with `_test` and verify the server reports
+MariaDB 10.4.32 before schema initialization. Set
+`SENTINEL_MYSQL_TEST_URL`, `SENTINEL_MYSQL_TEST_USER`, and `SENTINEL_MYSQL_TEST_PASSWORD` to enable them.
+Without a matching test URL, those tests are reported as skipped, not passed. A matching URL with missing
+credentials or a server other than MariaDB 10.4.32 fails setup explicitly. The tests remove only rows and migration
+markers created by their own random test identifiers and restore the rule configurations and pre-existing `RUNNING` session states
+present before each test;
+they do not truncate tables or remove pre-existing test database data. Use a disposable test database regardless.
 
 ## Import a capture
 
@@ -58,14 +78,29 @@ Rule metrics trigger when they are greater than or equal to their configured thr
 - Aggregation capacity evictions and late packet exclusions are counted and shown in the import summary; capacity eviction can reduce detection visibility.
 - The dashboard loads at most 500 recent alerts and 100 recent import sessions at a time; the database does not automatically delete older records.
 
-## Local database
+## MySQL storage and SQLite migration
 
-The default database location is `%LOCALAPPDATA%\SentinelNOC\sentinel_noc.db` on Windows. On other platforms it uses `~/.local/share/SentinelNOC/sentinel_noc.db`. Set the JVM system property `sentinel.db.path` to override the file location (for example, pass `-Dsentinel.db.path=C:\data\sentinel_noc.db` to the application JVM).
+MySQL stores the `import_sessions`, `intrusion_alerts`, and `detection_rule_configs` tables. Schema versions are
+tracked in `schema_migrations`; the application creates and migrates these tables without resetting existing data.
+Database creation and runtime schema migration require the application account to have privileges only on
+`sentinel_noc`.
 
-If SQLite cannot be initialized or queried, the dashboard reports the storage error and disables PCAP imports rather than claiming that alerts were saved. Import parsing and detection run in the background. The session and generated alerts are committed together; cancelled or failed imports retain a terminal history status but do not save partial alerts.
+Phase 5 data remains in its SQLite file and is not imported automatically. Back up the SQLite database and stop the
+application before migrating. With MySQL configured, run the migration explicitly:
 
-Close Sentinel NOC before making a file-copy backup. Copy `sentinel_noc.db` to a separate safe location. To restore, close the application, replace the database file with the backup, and restart. Do not delete the database to troubleshoot errors; preserve a copy and review the logs. The schema version is stored in SQLite `PRAGMA user_version`.
+```powershell
+mvn "-Dexec.mainClass=com.soc.persistence.SqliteToMySqlMigration" `
+    "-Dexec.args=C:\path\to\sentinel_noc.db" exec:java
+```
+
+The migration opens SQLite read-only, preserves session/alert IDs, evidence, event timestamps, statuses, and rule
+settings, checks source/target row counts, and records completion in MySQL to make repeat runs safe. See
+[PHASE_6_MYSQL_MIGRATION.md](PHASE_6_MYSQL_MIGRATION.md) for backup, migration, and recovery procedures.
+
+Import parsing and detection still run in the background. Successful session and alert writes commit together;
+failed or cancelled imports retain their terminal history status without partial alerts.
 
 Input packet payloads are parsed only as protocol metadata. The application does not execute payloads, change firewall configuration, or transmit capture data to external services.
 
-See [docs/PCAP_PIPELINE.md](docs/PCAP_PIPELINE.md) for implementation and limitations.
+See [docs/PCAP_PIPELINE.md](docs/PCAP_PIPELINE.md) for pipeline behavior and limitations, and
+[PHASE_5_PERSISTENCE.md](PHASE_5_PERSISTENCE.md) for the historical SQLite implementation.

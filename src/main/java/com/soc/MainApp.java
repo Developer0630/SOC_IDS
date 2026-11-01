@@ -9,9 +9,9 @@ import javafx.stage.Stage;
 import com.soc.ui.controller.MainDashboardController;
 import com.soc.detection.DetectionRuleSettings;
 import com.soc.persistence.ImportPersistence;
+import com.soc.persistence.MySqlDatabase;
+import com.soc.persistence.MySqlImportPersistence;
 import com.soc.persistence.PersistenceException;
-import com.soc.persistence.SqliteDatabase;
-import com.soc.persistence.SqliteImportPersistence;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -27,15 +27,15 @@ public class MainApp extends Application {
     @Override
     public void init() {
         try {
-            SqliteDatabase database = SqliteDatabase.forCurrentUser();
+            MySqlDatabase database = MySqlDatabase.fromEnvironment();
             database.initialize();
-            SqliteImportPersistence sqlitePersistence = new SqliteImportPersistence(database);
-            sqlitePersistence.markRunningImportsInterrupted();
-            ruleSettings = sqlitePersistence.loadOrCreateRuleSettings();
-            persistence = sqlitePersistence;
+            MySqlImportPersistence mysqlPersistence = new MySqlImportPersistence(database);
+            mysqlPersistence.markRunningImportsInterrupted();
+            ruleSettings = mysqlPersistence.loadOrCreateRuleSettings();
+            persistence = mysqlPersistence;
         } catch (PersistenceException exception) {
             persistenceFailure = exception.getMessage();
-            LOGGER.error("Persistent storage is unavailable; imports will be disabled", exception);
+            LOGGER.error("MySQL persistence is unavailable; imports will be disabled", exception);
         }
     }
 

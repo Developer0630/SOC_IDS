@@ -1,0 +1,11 @@
+CREATE DATABASE IF NOT EXISTS sentinel_noc
+    CHARACTER SET utf8mb4
+    COLLATE utf8mb4_unicode_ci;
+
+CREATE USER IF NOT EXISTS 'sentinel_app'@'localhost'
+    IDENTIFIED BY 'REPLACE_WITH_A_STRONG_LOCAL_PASSWORD';
+
+GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, REFERENCES
+    ON sentinel_noc.* TO 'sentinel_app'@'localhost';
+
+FLUSH PRIVILEGES;

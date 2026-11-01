@@ -1,5 +1,10 @@
 # Phase 5 — SQLite Persistence
 
+> **Historical implementation note:** Phase 6 replaces SQLite as the application's active persistence backend
+> with MySQL. SQLite remains a JDBC dependency only to read existing Phase 5 databases during the explicit,
+> read-only migration tool. Phase 5 test results and decisions below describe the implementation at that point in
+> project history; for current setup and behavior see [PHASE_6_MYSQL_MIGRATION.md](PHASE_6_MYSQL_MIGRATION.md).
+
 ## Architecture
 
 The IDS pipeline remains unchanged through packet parsing, aggregation, and detection. `PcapImportService` now depends on `ImportPersistence` rather than the test-only bounded repository:

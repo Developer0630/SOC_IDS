@@ -2,7 +2,7 @@
 
 ## Processing flow
 
-`PcapFileReader` streams classic PCAP records from disk. `PcapPacketParser` uses Pcap4J's static packet factory to normalize Ethernet/IP/TCP/UDP/ICMP/DNS metadata into `NetworkPacket`. `PcapImportService` sends each parsed packet directly through the bounded `TrafficAggregator` and `DetectionEngine` on the JavaFX `Task` worker. On success, `SqliteImportPersistence` inserts the bounded alert batch and marks its import session `COMPLETED` in one SQLite transaction. The controller refreshes bounded observable lists from persistence on the worker executor, then applies results on the JavaFX Application Thread.
+`PcapFileReader` streams classic PCAP records from disk. `PcapPacketParser` uses Pcap4J's static packet factory to normalize Ethernet/IP/TCP/UDP/ICMP/DNS metadata into `NetworkPacket`. `PcapImportService` sends each parsed packet directly through the bounded `TrafficAggregator` and `DetectionEngine` on the JavaFX `Task` worker. On success, `MySqlImportPersistence` inserts the bounded alert batch and marks its import session `COMPLETED` in one MySQL transaction. The controller refreshes bounded observable lists from persistence on the worker executor, then applies results on the JavaFX Application Thread.
 
 There is no intermediate unbounded queue: file reading, parsing, aggregation, and rule evaluation are sequential on one worker thread. Progress is reported in batches, traffic display is limited to 500 records, and dashboard queries load at most 500 alerts and 100 import sessions at a time. Cancellation prevents partial alert persistence; a session row remains with `CANCELLED`. Import errors are recorded as `FAILED`. A `RUNNING` session left by an abrupt shutdown is changed to `INTERRUPTED` at the next startup.
 
@@ -32,16 +32,38 @@ Aggregation is bounded to 10,000 source IPs, 4,096 timestamp buckets per source,
 
 The import retains at most 2,000 generated alerts for persistence and reports further findings omitted by this per-import limit. The persistent repository does not prune historical records. The dashboard queries the most recent 500 alerts or up to 500 alerts for a selected import, and displays the most recent 100 import sessions. The in-memory repository remains only as a test implementation.
 
-## SQLite persistence
+## MySQL persistence
 
-Xerial SQLite JDBC is used without an ORM. The default database is `%LOCALAPPDATA%\SentinelNOC\sentinel_noc.db` on Windows, or `~/.local/share/SentinelNOC/sentinel_noc.db` elsewhere. Override the location with the JVM property `sentinel.db.path`. `SqliteDatabase` opens a new connection per operation, enables foreign keys and a bounded busy timeout, and stores the schema version in `PRAGMA user_version`. Schema version 1 creates:
+MySQL Connector/J is used without an ORM or shared JDBC connection pool. Each persistence operation opens and closes
+its own connection; JDBC calls are made from the existing background worker. Configure `SENTINEL_DB_URL`,
+`SENTINEL_DB_USER`, and `SENTINEL_DB_PASSWORD`. The default JDBC URL targets `localhost:3306/sentinel_noc` and
+sets connection/socket timeouts. The application rejects the MySQL `root` user and does not fall back to SQLite or
+in-memory persistence. `MySqlDatabase` tracks schema versions in `schema_migrations` and serializes startup migration
+with a MySQL advisory lock. Version 1 creates:
 
 - `import_sessions`, the parent record for every PCAP import.
 - `intrusion_alerts`, with a foreign key to its import session, event timestamp seconds/nanoseconds, rule identity, severity, description, evidence, and status.
 - `detection_rule_configs`, with one row per supported rule.
 
-Creating or completing an import uses transactions. Completion updates the session and inserts its alerts atomically; on a failure the transaction rolls back and the service records `FAILED` if storage remains available. Session `alerts_created` records detection findings generated, while only up to 2,000 alert rows are stored for that import. The only configured thresholds/time window are saved through **Save Rules** or immediately before an import. Missing rule rows are initialized with the existing defaults; partial or inconsistent stored configurations are reported rather than silently replaced. If the database cannot initialize, the dashboard remains available in degraded mode but disables imports.
+`schema_migrations` stores schema version and `sentinel_data_migrations` records explicit SQLite data imports.
+Indexes cover alert event time, import/time, rule ID, and severity. Event time is stored as integer seconds plus
+nanoseconds to preserve the PCAP timestamp exactly; evidence is stored as text without Java object serialization.
 
-Before a file-copy backup or restore, close the application. Copy `sentinel_noc.db` to a safe location; restore by closing the app and replacing the database file. Keep backups separate from the application data directory. No automatic cleanup or database reset is performed.
+Import creation/completion and alert writes use transactions. Completion updates the session and inserts alerts
+atomically; a failed write rolls back and the service reports persistence failure rather than a successful import.
+Session `alerts_created` is the number of detection findings, while up to 2,000 alert rows are retained per import;
+additional findings are reported as omitted. Dashboard reads remain bounded to 500 alerts (including per-import
+queries) and 100 sessions. No automatic history pruning is performed. Missing rule rows use existing defaults;
+partial or inconsistent configuration is reported instead of silently replaced.
+
+MySQL DDL is not treated as transactional: startup uses idempotent `CREATE TABLE IF NOT EXISTS` statements and
+records a schema version only after all v1 tables are created. A startup lock prevents concurrent schema migration.
+Unknown future versions are rejected without resetting existing tables. The app account needs schema DDL privileges
+on `sentinel_noc`; setup is documented in [database/mysql/init.sql](../database/mysql/init.sql).
+
+SQLite from Phase 5 is no longer an application backend. An explicit migration command opens the source in
+query-only mode, validates schema and foreign keys, copies session/alert rows transactionally, verifies counts,
+and writes a completion marker. It does not modify or delete the source file. Close the old application and make a
+separate SQLite backup before migration. See [PHASE_6_MYSQL_MIGRATION.md](../PHASE_6_MYSQL_MIGRATION.md).
 
 Synthetic PCAP frames used by unit tests are generated in test code and are not production traffic or shipped sample captures.

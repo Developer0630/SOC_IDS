@@ -242,8 +242,7 @@ public class MainDashboardController {
             return;
         }
         databaseStatusLabel.setText("DATABASE READY");
-        databaseStatusLabel.setTooltip(new Tooltip(
-                "SQLite: " + persistence.databasePath().map(Path::toString).orElse("not configured")));
+        databaseStatusLabel.setTooltip(new Tooltip(persistence.storageDescription()));
         loadDashboardAsync();
     }
 

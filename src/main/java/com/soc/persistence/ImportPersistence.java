@@ -19,4 +19,8 @@ public interface ImportPersistence extends AlertRepository,
     long countCriticalAlerts();
 
     Optional<Path> databasePath();
+
+    default String storageDescription() {
+        return databasePath().map(Path::toString).orElse("not configured");
+    }
 }
