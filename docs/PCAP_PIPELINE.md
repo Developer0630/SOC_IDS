@@ -4,6 +4,17 @@
 
 `PcapFileReader` streams classic PCAP records from disk. `PcapPacketParser` uses Pcap4J's static packet factory to normalize Ethernet/IP/TCP/UDP/ICMP/DNS metadata into `NetworkPacket`. `PcapImportService` sends each parsed packet directly through the bounded `TrafficAggregator` and `DetectionEngine` on the JavaFX `Task` worker. On success, `MySqlImportPersistence` inserts the bounded alert batch and marks its import session `COMPLETED` in one MySQL transaction. The controller refreshes bounded observable lists from persistence on the worker executor, then applies results on the JavaFX Application Thread.
 
+Live monitoring uses `Pcap4jLivePacketSource` to enumerate and open only the user-selected interface in
+non-promiscuous mode. `LiveCaptureService` owns one capture worker, passes each captured record through the same
+`PcapPacketParser` and `DetectionEngine`, and retains bounded metadata samples and observed IP/MAC endpoint
+statistics. The UI receives snapshots on the JavaFX Application Thread. Payload bytes are transient to parsing and
+are not included in the live metadata or database.
+
+A live session uses the existing import-session repository contract (`file_name` is `LIVE: <interface>`). Alerts
+are committed atomically with the completed session when capture stops, subject to the existing 2,000-alert
+session limit. If the application exits unexpectedly, startup marks the session `INTERRUPTED`; alerts that were
+still held in memory are not recoverable. This is intentionally not an incremental live-alert persistence design.
+
 There is no intermediate unbounded queue: file reading, parsing, aggregation, and rule evaluation are sequential on one worker thread. Progress is reported in batches, traffic display is limited to 500 records, and dashboard queries load at most 500 alerts and 100 import sessions at a time. Cancellation prevents partial alert persistence; a session row remains with `CANCELLED`. Import errors are recorded as `FAILED`. A `RUNNING` session left by an abrupt shutdown is changed to `INTERRUPTED` at the next startup.
 
 ## Input support and validation
@@ -11,6 +22,12 @@ There is no intermediate unbounded queue: file reading, parsing, aggregation, an
 The reader supports classic PCAP v2.4 in little- or big-endian byte order and microsecond or nanosecond timestamp precision. It currently accepts Ethernet link type 1 only. PCAPNG, unsupported link types, truncated record headers/data, invalid timestamps, invalid file signatures, and configured size/record-limit violations fail the import with an error.
 
 Pcap4J 1.8.2 has native-backed `PcapHandle.openOffline` APIs; the importer intentionally does not use them. The file reader is pure Java and packet decoding uses the existing static packet factory dependency, so offline imports do not require a native capture driver.
+
+Live capture does require a working Npcap/libpcap installation and sufficient OS permission. It is passive and
+non-promiscuous: the selected adapter may not receive all traffic on a switched network, and host configuration,
+Wi-Fi isolation, VPNs, or offload behavior may further constrain visibility. Runtime interface capture has not
+been verified in the target environment. A missing driver, inaccessible interface, or permission failure is
+reported rather than falling back to another source.
 
 Packets shorter than an Ethernet header, IP packets whose declared length exceeds their captured bytes, or frames that the parser cannot decode are counted as malformed. Non-IP Ethernet packets are counted as unsupported. These packets are not treated as alerts. Packet payloads are not stored or executed. DNS question metadata is included only for successfully decoded DNS requests.
 
@@ -30,7 +47,16 @@ Aggregation is bounded to 10,000 source IPs, 4,096 timestamp buckets per source,
 
 ## Persistence and limitations
 
-The import retains at most 2,000 generated alerts for persistence and reports further findings omitted by this per-import limit. The persistent repository does not prune historical records. The dashboard queries the most recent 500 alerts or up to 500 alerts for a selected import, and displays the most recent 100 import sessions. The in-memory repository remains only as a test implementation.
+Each import or live session retains at most 2,000 generated alerts for persistence and reports further findings
+omitted by the per-session limit. The persistent repository does not prune historical records. The dashboard
+queries the most recent 500 alerts or up to 500 alerts for a selected import, and displays the most recent 100
+sessions. The in-memory repository remains only as a test implementation.
+
+Live endpoint information is limited to observed IP/MAC values, packet counts, and first/last-seen timestamps.
+These values do not verify device identity; hostname, owner, device baseline, policy exceptions, separate detection
+confidence, and investigation statuses are not implemented. The schema's alert status remains `NEW`, and no
+automated blocking or enforcement is performed. Failed connection detection is not inferred because the parser
+does not provide reliable connection outcomes.
 
 ## MySQL persistence
 

@@ -1,6 +1,7 @@
 # Sentinel NOC
 
-Sentinel NOC is a JavaFX desktop IDS prototype with an offline PCAP import and heuristic detection pipeline.
+Sentinel NOC is a JavaFX desktop IDS prototype with passive live network monitoring, offline PCAP import, and
+heuristic detection.
 
 ## Requirements
 
@@ -8,7 +9,9 @@ Sentinel NOC is a JavaFX desktop IDS prototype with an offline PCAP import and h
 - Maven 3.8+
 - Windows, Linux, or macOS with a JavaFX-supported desktop
 
-Pcap4J 1.8.2 is used to decode packet metadata. The offline reader is implemented in Java and does not require Npcap/libpcap. MySQL Connector/J 9.2.0 stores import history, alerts, and detection-rule settings through the MySQL wire
+Pcap4J 1.8.2 decodes packet metadata and provides live interface capture. Offline PCAP import does not require
+Npcap/libpcap; live capture requires Npcap on Windows (or libpcap on supported Unix-like systems) and permission
+to capture on the selected interface. MySQL Connector/J 9.2.0 stores import history, alerts, and detection-rule settings through the MySQL wire
 protocol. MariaDB 10.4.32/XAMPP is the selected target and has been verified by the repository's server-backed
 integration tests. This verification does not include production rollout or manual GUI validation.
 
@@ -53,7 +56,32 @@ they do not truncate tables or remove pre-existing test database data. Use a dis
 4. Choose **Start Import**. Parsing and detection run on a background worker; **Cancel** stops the current import.
 5. Review the parsed metadata under **Traffic Sample** and the evidence for findings under **Recent Alerts** (double-click an alert).
 
-Supported input is classic PCAP v2.4, Ethernet link type 1, with IPv4/IPv6 packet decoding. IPv4/IPv6 TCP, UDP, ICMP and ICMPv6 metadata are recognized; DNS query names are shown when Pcap4J can decode the question. Non-IP Ethernet frames are counted as unsupported, malformed frames are counted separately. PCAPNG, non-Ethernet link types, live capture, and packet payload inspection are not supported by this phase.
+Offline input supports classic PCAP v2.4, Ethernet link type 1, with IPv4/IPv6 packet decoding. IPv4/IPv6 TCP,
+UDP, ICMP and ICMPv6 metadata are recognized; DNS query names are shown when Pcap4J can decode the question.
+Non-IP Ethernet frames are counted as unsupported, malformed frames are counted separately. PCAPNG and
+non-Ethernet PCAP input are not supported.
+
+## Live network monitoring
+
+1. Install Npcap for Windows (or the platform's libpcap-compatible capture library) and grant the application
+   permission to capture on the intended adapter.
+2. Select **Refresh interfaces**, choose one interface, and select **Start monitoring**. Live capture is
+   non-promiscuous and runs on a dedicated worker; **Stop** closes the capture handle and persists the session.
+3. Review recent metadata under **Traffic Sample**, observed IP/MAC endpoints under **Observed Endpoints**, and
+   heuristic findings under **Recent Alerts**.
+
+Capture sees only packets delivered by the selected adapter and operating system; switched networks, Wi-Fi client
+isolation, VPNs, and adapter offload can limit visibility. IP/MAC are observations, not authenticated device
+identity. Captured bytes are parsed transiently and full packet payloads are not retained. The capture has not been
+validated against a real Npcap adapter in this environment, so native driver and privilege behavior remain
+unverified. If an interface disappears or capture permissions are insufficient, the session reports a failure.
+
+Live monitoring reuses the configured port-scan, bare-SYN-rate, and ICMP-rate heuristics and their event-time
+suppression behavior. It does not infer failed connections, identify users, run a device baseline, or confirm an
+incident. The existing alert model has no confidence field or investigation workflow; alerts remain `NEW`.
+Generated live alerts are held in memory and committed with the session when capture stops, with the existing
+2,000-alert per-session persistence cap. A process crash before stopping leaves the session interrupted and loses
+its not-yet-committed live alerts.
 
 Detection thresholds and the shared observation window (1–3,600 seconds) can be configured in the import panel. Defaults use a 10-second event-time window:
 
@@ -74,7 +102,7 @@ Rule metrics trigger when they are greater than or equal to their configured thr
 - Maximum captured bytes per packet: 16 MiB.
 - At most 500 recent packets are displayed per import.
 - Traffic aggregation tracks at most 10,000 sources, 4,096 timestamp buckets per source, and 100,000 buckets total.
-- At most 2,000 generated alerts are retained for one import. The import summary reports additional findings omitted by that limit.
+- At most 2,000 generated alerts are retained per import or live session. Import summaries and live status report additional findings omitted by that limit.
 - Aggregation capacity evictions and late packet exclusions are counted and shown in the import summary; capacity eviction can reduce detection visibility.
 - The dashboard loads at most 500 recent alerts and 100 recent import sessions at a time; the database does not automatically delete older records.
 

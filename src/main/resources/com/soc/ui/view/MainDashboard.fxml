@@ -2,6 +2,7 @@
 <?import javafx.geometry.Insets?>
 <?import javafx.scene.control.Button?>
 <?import javafx.scene.control.CheckBox?>
+<?import javafx.scene.control.ComboBox?>
 <?import javafx.scene.control.Label?>
 <?import javafx.scene.control.ProgressBar?>
 <?import javafx.scene.control.Tab?>
@@ -86,6 +87,34 @@
                     <Label text="Latest import · bounded" styleClass="metric-caption"/>
                 </VBox>
             </HBox>
+            <VBox spacing="8" styleClass="section-panel">
+                <HBox alignment="CENTER_LEFT" spacing="8">
+                    <VBox spacing="3">
+                        <Label text="Live network monitoring" styleClass="section-title"/>
+                        <Label text="Passive capture on one selected interface · payloads are not retained"
+                               styleClass="section-description"/>
+                    </VBox>
+                    <Region HBox.hgrow="ALWAYS"/>
+                    <Label fx:id="captureStatusLabel" text="CAPTURE IDLE" styleClass="status-badge status-neutral"/>
+                </HBox>
+                <HBox alignment="CENTER_LEFT" spacing="8">
+                    <ComboBox fx:id="captureInterfaceCombo" promptText="Select network interface"
+                              prefWidth="520" maxWidth="Infinity" HBox.hgrow="ALWAYS"/>
+                    <Button fx:id="refreshInterfacesButton" text="Refresh interfaces"
+                            onAction="#handleRefreshInterfaces" styleClass="secondary-button"/>
+                    <Button fx:id="startCaptureButton" text="Start monitoring"
+                            onAction="#handleStartCapture" styleClass="primary-button" disable="true"/>
+                    <Button fx:id="stopCaptureButton" text="Stop" onAction="#handleStopCapture"
+                            styleClass="secondary-button" disable="true"/>
+                </HBox>
+                <HBox alignment="CENTER_LEFT" spacing="8">
+                    <Label fx:id="captureMetricsLabel" text="0 packets · 0 B · 0.0 pkt/s · 0 B/s · 0 tracked flow tuples"
+                           styleClass="section-description"/>
+                    <Region HBox.hgrow="ALWAYS"/>
+                    <Label fx:id="interfaceHelpLabel" text="Interfaces are loading..."
+                           styleClass="section-description" wrapText="true"/>
+                </HBox>
+            </VBox>
             <VBox spacing="10" styleClass="section-panel">
                 <HBox alignment="CENTER_LEFT" spacing="8">
                     <VBox spacing="3">
@@ -146,7 +175,7 @@
                                 <TableView fx:id="alertTable" VBox.vgrow="ALWAYS" styleClass="data-table"
                                            onMouseClicked="#handleShowAlertDetails">
                                     <placeholder>
-                                        <Label text="No alerts found in processed PCAP data."/>
+                                        <Label text="No alerts found in the selected import or live session."/>
                                     </placeholder>
                                     <columns>
                                         <TableColumn fx:id="alertTimeColumn" text="Timestamp" prefWidth="190"/>
@@ -189,7 +218,7 @@
                                 <HBox alignment="CENTER_LEFT">
                                     <VBox spacing="3">
                                         <Label text="Parsed packet metadata" styleClass="section-title"/>
-                                        <Label text="Most recent 500 supported IPv4/IPv6 Ethernet packets."
+                                        <Label text="Most recent 500 supported IPv4/IPv6 Ethernet packet metadata records."
                                                styleClass="section-description"/>
                                     </VBox>
                                 </HBox>
@@ -210,6 +239,31 @@
                             </VBox>
                         </content>
                     </Tab>
+                    <Tab text="Observed Endpoints" closable="false">
+                        <content>
+                            <VBox spacing="10" styleClass="section-panel">
+                                <HBox alignment="CENTER_LEFT">
+                                    <VBox spacing="3">
+                                        <Label text="Observed network endpoints" styleClass="section-title"/>
+                                        <Label text="IP/MAC values are passive observations, not verified device identities."
+                                               styleClass="section-description"/>
+                                    </VBox>
+                                </HBox>
+                                <TableView fx:id="endpointTable" VBox.vgrow="ALWAYS" styleClass="data-table">
+                                    <placeholder>
+                                        <Label text="No endpoints observed in the current capture."/>
+                                    </placeholder>
+                                    <columns>
+                                        <TableColumn fx:id="endpointIpColumn" text="Observed IP" prefWidth="190"/>
+                                        <TableColumn fx:id="endpointMacColumn" text="Observed MAC" prefWidth="190"/>
+                                        <TableColumn fx:id="endpointPacketsColumn" text="Packets" prefWidth="120"/>
+                                        <TableColumn fx:id="endpointFirstSeenColumn" text="First seen" prefWidth="190"/>
+                                        <TableColumn fx:id="endpointLastSeenColumn" text="Last seen" prefWidth="190"/>
+                                    </columns>
+                                </TableView>
+                            </VBox>
+                        </content>
+                    </Tab>
                 </tabs>
             </TabPane>
         </VBox>
@@ -219,7 +273,8 @@
             <padding>
                 <Insets top="8" right="20" bottom="8" left="20"/>
             </padding>
-            <Label text="Capture: idle"/>
+            <Label text="Capture:"/>
+            <Label fx:id="captureStatusBarLabel" text="IDLE"/>
             <Label text="|"/>
             <Label text="Processing: idle"/>
             <Region HBox.hgrow="ALWAYS"/>

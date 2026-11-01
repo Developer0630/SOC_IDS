@@ -4,8 +4,15 @@ import com.soc.detection.DetectionRuleSettings;
 import com.soc.model.AlertStatus;
 import com.soc.model.IntrusionAlert;
 import com.soc.model.NetworkPacket;
+import com.soc.model.ObservedEndpoint;
 import com.soc.model.RiskLevel;
 import com.soc.network.capture.ImportSummary;
+import com.soc.network.capture.LiveCaptureInterface;
+import com.soc.network.capture.LiveCaptureService;
+import com.soc.network.capture.LiveCaptureSnapshot;
+import com.soc.network.capture.LiveCaptureState;
+import com.soc.network.capture.LivePacketSource;
+import com.soc.network.capture.Pcap4jLivePacketSource;
 import com.soc.network.capture.PcapFileReader;
 import com.soc.network.capture.PcapImportService;
 import com.soc.network.capture.PcapReadConfig;
@@ -13,12 +20,14 @@ import com.soc.persistence.ImportPersistence;
 import com.soc.persistence.ImportSession;
 import com.soc.persistence.PersistenceException;
 import javafx.fxml.FXML;
+import javafx.application.Platform;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 import javafx.concurrent.Task;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
 import javafx.scene.control.CheckBox;
+import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.ProgressBar;
 import javafx.scene.control.TableColumn;
@@ -97,6 +106,18 @@ public class MainDashboardController {
     @FXML
     private TableColumn<NetworkPacket, String> trafficDnsColumn;
     @FXML
+    private TableView<ObservedEndpoint> endpointTable;
+    @FXML
+    private TableColumn<ObservedEndpoint, String> endpointIpColumn;
+    @FXML
+    private TableColumn<ObservedEndpoint, String> endpointMacColumn;
+    @FXML
+    private TableColumn<ObservedEndpoint, Number> endpointPacketsColumn;
+    @FXML
+    private TableColumn<ObservedEndpoint, String> endpointFirstSeenColumn;
+    @FXML
+    private TableColumn<ObservedEndpoint, String> endpointLastSeenColumn;
+    @FXML
     private Label selectedFileLabel;
     @FXML
     private Label importInfoLabel;
@@ -106,6 +127,14 @@ public class MainDashboardController {
     private Label sourceStatusLabel;
     @FXML
     private Label engineStatusLabel;
+    @FXML
+    private Label captureStatusLabel;
+    @FXML
+    private Label captureStatusBarLabel;
+    @FXML
+    private Label captureMetricsLabel;
+    @FXML
+    private Label interfaceHelpLabel;
     @FXML
     private Label databaseStatusLabel;
     @FXML
@@ -127,6 +156,14 @@ public class MainDashboardController {
     @FXML
     private Button saveRulesButton;
     @FXML
+    private ComboBox<LiveCaptureInterface> captureInterfaceCombo;
+    @FXML
+    private Button refreshInterfacesButton;
+    @FXML
+    private Button startCaptureButton;
+    @FXML
+    private Button stopCaptureButton;
+    @FXML
     private CheckBox portScanEnabled;
     @FXML
     private CheckBox synEnabled;
@@ -144,9 +181,17 @@ public class MainDashboardController {
     private final ObservableList<IntrusionAlert> alerts = FXCollections.observableArrayList();
     private final ObservableList<NetworkPacket> traffic = FXCollections.observableArrayList();
     private final ObservableList<ImportSession> importHistory = FXCollections.observableArrayList();
+    private final ObservableList<ObservedEndpoint> observedEndpoints = FXCollections.observableArrayList();
     private final ImportPersistence persistence;
     private final String persistenceFailure;
     private final PcapImportService importService;
+    private final LivePacketSource livePacketSource;
+    private final LiveCaptureService liveCaptureService;
+    private final ExecutorService captureControlExecutor = Executors.newSingleThreadExecutor(task -> {
+        Thread thread = new Thread(task, "sentinel-capture-control");
+        thread.setDaemon(true);
+        return thread;
+    });
     private final ExecutorService importExecutor = Executors.newSingleThreadExecutor(task -> {
         Thread thread = new Thread(task, "sentinel-pcap-import");
         thread.setDaemon(true);
@@ -157,6 +202,7 @@ public class MainDashboardController {
     private AtomicBoolean importCancellation;
     private boolean closed;
     private boolean persistenceReady;
+    private LiveCaptureState lastCaptureState = LiveCaptureState.IDLE;
 
     public MainDashboardController(
             ImportPersistence persistence,
@@ -165,6 +211,21 @@ public class MainDashboardController {
         this.persistence = persistence;
         this.persistenceFailure = persistenceFailure;
         this.importService = persistence == null ? null : new PcapImportService(PCAP_LIMITS, persistence);
+        this.livePacketSource = new Pcap4jLivePacketSource();
+        this.liveCaptureService = persistence == null ? null : new LiveCaptureService(
+                persistence,
+                livePacketSource,
+                snapshot -> {
+                    try {
+                        Platform.runLater(() -> {
+                            if (!closed) {
+                                applyLiveCaptureSnapshot(snapshot);
+                            }
+                        });
+                    } catch (IllegalStateException exception) {
+                        LOGGER.debug("JavaFX toolkit stopped before the final capture status update");
+                    }
+                });
         this.initialRuleSettings = initialRuleSettings;
     }
 
@@ -229,16 +290,33 @@ public class MainDashboardController {
         trafficDnsColumn.setCellValueFactory(cell ->
                 new javafx.beans.property.SimpleStringProperty(cell.getValue().dnsQueryName().orElse("—")));
         trafficTable.setItems(traffic);
+        endpointIpColumn.setCellValueFactory(cell ->
+                new javafx.beans.property.SimpleStringProperty(cell.getValue().ipAddress()));
+        endpointMacColumn.setCellValueFactory(cell ->
+                new javafx.beans.property.SimpleStringProperty(cell.getValue().macAddress().orElse("—")));
+        endpointPacketsColumn.setCellValueFactory(cell ->
+                new javafx.beans.property.SimpleLongProperty(cell.getValue().packetsSeen()));
+        endpointFirstSeenColumn.setCellValueFactory(cell ->
+                new javafx.beans.property.SimpleStringProperty(
+                        TIMESTAMP_FORMAT.format(cell.getValue().firstSeen())));
+        endpointLastSeenColumn.setCellValueFactory(cell ->
+                new javafx.beans.property.SimpleStringProperty(
+                        TIMESTAMP_FORMAT.format(cell.getValue().lastSeen())));
+        endpointTable.setItems(observedEndpoints);
         cancelImportButton.setDisable(true);
         chooseFileButton.setDisable(true);
         saveRulesButton.setDisable(true);
+        stopCaptureButton.setDisable(true);
         importProgressBar.setProgress(0);
         applyRuleSettings(initialRuleSettings);
+        refreshInterfacesAsync();
         if (persistence == null) {
             databaseStatusLabel.setText("DATABASE UNAVAILABLE");
             databaseStatusLabel.setTooltip(new Tooltip(
                     Optional.ofNullable(persistenceFailure).orElse("Persistent storage could not be initialized.")));
             importStatusLabel.setText("Database unavailable; PCAP imports are disabled to prevent data loss.");
+            interfaceHelpLabel.setText("Capture requires persistent storage; configure MySQL before monitoring.");
+            updateCaptureControls();
             return;
         }
         databaseStatusLabel.setText("DATABASE READY");
@@ -247,8 +325,154 @@ public class MainDashboardController {
     }
 
     @FXML
+    private void handleRefreshInterfaces() {
+        refreshInterfacesAsync();
+    }
+
+    private void refreshInterfacesAsync() {
+        if (closed) {
+            return;
+        }
+        refreshInterfacesButton.setDisable(true);
+        captureInterfaceCombo.getItems().clear();
+        interfaceHelpLabel.setText("Looking for available capture interfaces...");
+        Task<List<LiveCaptureInterface>> task = new Task<>() {
+            @Override
+            protected List<LiveCaptureInterface> call() throws Exception {
+                return livePacketSource.listInterfaces();
+            }
+        };
+        task.setOnSucceeded(event -> {
+            if (closed) {
+                return;
+            }
+            captureInterfaceCombo.setItems(FXCollections.observableArrayList(task.getValue()));
+            if (task.getValue().isEmpty()) {
+                interfaceHelpLabel.setText(
+                        "No capture interfaces were reported. Verify Npcap installation and interface availability.");
+            } else {
+                captureInterfaceCombo.getSelectionModel().selectFirst();
+                interfaceHelpLabel.setText(
+                        "Passive, non-promiscuous capture sees only traffic delivered to this adapter.");
+            }
+            updateCaptureControls();
+        });
+        task.setOnFailed(event -> {
+            if (closed) {
+                return;
+            }
+            Throwable failure = task.getException();
+            String message = failure == null ? "Unknown interface enumeration error" : failure.getMessage();
+            interfaceHelpLabel.setText("Unable to enumerate interfaces: " + message);
+            LOGGER.error("Unable to enumerate live capture interfaces", failure);
+            updateCaptureControls();
+        });
+        task.setOnCancelled(event -> {
+            if (!closed) {
+                interfaceHelpLabel.setText("Interface enumeration was cancelled.");
+                updateCaptureControls();
+            }
+        });
+        captureControlExecutor.execute(task);
+    }
+
+    @FXML
+    private void handleStartCapture() {
+        if (closed || !persistenceReady || liveCaptureService == null
+                || activeImport != null || captureInterfaceCombo.getValue() == null) {
+            return;
+        }
+        DetectionRuleSettings ruleSettings = readRuleSettings();
+        if (ruleSettings == null) {
+            return;
+        }
+        String interfaceName = captureInterfaceCombo.getValue().name();
+        if (!liveCaptureService.start(interfaceName, ruleSettings)) {
+            return;
+        }
+        importHistoryTable.getSelectionModel().clearSelection();
+        traffic.clear();
+        observedEndpoints.clear();
+        importStatusLabel.setText("Starting passive live capture on " + interfaceName + "...");
+        setControlsBusy(false);
+    }
+
+    @FXML
+    private void handleStopCapture() {
+        if (liveCaptureService != null) {
+            liveCaptureService.stop();
+            captureStatusLabel.setText("CAPTURE STOPPING");
+            setControlsBusy(activeImport != null);
+        }
+    }
+
+    private void applyLiveCaptureSnapshot(LiveCaptureSnapshot snapshot) {
+        LiveCaptureState previousState = lastCaptureState;
+        lastCaptureState = snapshot.state();
+        String interfaceText = snapshot.interfaceName().orElse("no interface");
+        captureStatusLabel.setText("CAPTURE " + snapshot.state().name());
+        captureStatusBarLabel.setText(snapshot.state().name());
+        captureMetricsLabel.setText(String.format(
+                "%,d packets · %s · %.1f pkt/s · %s/s · %,d tracked flow tuples",
+                snapshot.packetsCaptured(),
+                formatBytes(snapshot.bytesCaptured()),
+                snapshot.packetsPerSecond(),
+                formatBytes((long) snapshot.bytesPerSecond()),
+                snapshot.trackedFlowTuples()));
+        sourceStatusLabel.setText(switch (snapshot.state()) {
+            case STARTING -> "CAPTURE STARTING";
+            case RUNNING -> "CAPTURE RUNNING";
+            case STOPPING -> "CAPTURE STOPPING";
+            case STOPPED -> "CAPTURE STOPPED";
+            case FAILED -> "CAPTURE FAILED";
+            case IDLE -> "SOURCE NOT CONNECTED";
+        });
+        engineStatusLabel.setText(snapshot.state() == LiveCaptureState.RUNNING
+                ? "ENGINE RUNNING" : "ENGINE IDLE");
+
+        if (snapshot.state() == LiveCaptureState.RUNNING
+                || snapshot.state() == LiveCaptureState.STOPPING) {
+            traffic.setAll(snapshot.recentTraffic());
+            alerts.setAll(snapshot.recentAlerts());
+            observedEndpoints.setAll(snapshot.observedEndpoints());
+            packetsValue.setText(Long.toString(snapshot.packetsCaptured()));
+            sourceIpsValue.setText(Integer.toString(snapshot.observedEndpoints().size()));
+            alertsValue.setText(Long.toString(snapshot.alertsGenerated()));
+            importStatusLabel.setText(
+                    "Monitoring " + interfaceText + " · parsed " + snapshot.packetsParsed()
+                            + " · unsupported " + snapshot.unsupportedPackets()
+                            + " · malformed " + snapshot.malformedPackets()
+                            + " · alerts retained " + snapshot.recentAlerts().size());
+        } else if (snapshot.state() == LiveCaptureState.STOPPED) {
+            importStatusLabel.setText(
+                    "Live capture stopped and persisted: " + snapshot.packetsCaptured() + " packets, "
+                            + snapshot.packetsParsed() + " parsed, " + snapshot.alertsGenerated()
+                            + " findings generated for " + interfaceText + ".");
+        }
+        if (snapshot.failureMessage().isPresent()) {
+            String failure = snapshot.failureMessage().orElseThrow();
+            importStatusLabel.setText("Live monitoring failed: " + failure);
+            if (failure.startsWith("Persistent storage failed:")) {
+                databaseStatusLabel.setText("DATABASE ERROR");
+                persistenceReady = false;
+            }
+        }
+        if (snapshot.alertsOmitted() > 0) {
+            importStatusLabel.setText(importStatusLabel.getText()
+                    + " " + snapshot.alertsOmitted() + " alerts were omitted by the 2,000-alert session limit.");
+        }
+        setControlsBusy(activeImport != null);
+        if ((snapshot.state() == LiveCaptureState.STOPPED
+                || snapshot.state() == LiveCaptureState.FAILED)
+                && previousState != snapshot.state()) {
+            refreshDashboardAsync();
+        }
+    }
+
+    @FXML
     private void handleChooseFile() {
-        if (!persistenceReady || closed) {
+        if (!persistenceReady || closed
+                || liveCaptureService != null && isCaptureActive(liveCaptureService.snapshot().state())) {
             return;
         }
         FileChooser chooser = new FileChooser();
@@ -283,7 +507,8 @@ public class MainDashboardController {
 
     @FXML
     private void handleStartImport() {
-        if (closed || !persistenceReady || selectedFile == null || activeImport != null) {
+        if (closed || !persistenceReady || selectedFile == null || activeImport != null
+                || liveCaptureService != null && isCaptureActive(liveCaptureService.snapshot().state())) {
             return;
         }
         DetectionRuleSettings ruleSettings = readRuleSettings();
@@ -401,7 +626,8 @@ public class MainDashboardController {
 
     @FXML
     private void handleSaveRules() {
-        if (closed || !persistenceReady) {
+        if (closed || !persistenceReady
+                || liveCaptureService != null && isCaptureActive(liveCaptureService.snapshot().state())) {
             return;
         }
         DetectionRuleSettings ruleSettings = readRuleSettings();
@@ -502,6 +728,10 @@ public class MainDashboardController {
         }
         importStatusLabel.textProperty().unbind();
         importProgressBar.progressProperty().unbind();
+        if (liveCaptureService != null) {
+            liveCaptureService.close();
+        }
+        captureControlExecutor.shutdownNow();
         importExecutor.shutdownNow();
     }
 
@@ -522,18 +752,46 @@ public class MainDashboardController {
     }
 
     private void setControlsBusy(boolean busy) {
-        chooseFileButton.setDisable(busy || !persistenceReady);
-        startImportButton.setDisable(busy || !persistenceReady || selectedFile == null);
-        saveRulesButton.setDisable(busy || !persistenceReady);
+        boolean captureActive = liveCaptureService != null
+                && isCaptureActive(liveCaptureService.snapshot().state());
+        chooseFileButton.setDisable(busy || captureActive || !persistenceReady);
+        startImportButton.setDisable(
+                busy || captureActive || !persistenceReady || selectedFile == null);
+        saveRulesButton.setDisable(busy || captureActive || !persistenceReady);
         cancelImportButton.setDisable(activeImport == null
                 || importCancellation != null && importCancellation.get());
-        portScanEnabled.setDisable(busy);
-        synEnabled.setDisable(busy);
-        icmpEnabled.setDisable(busy);
-        portScanThreshold.setDisable(busy);
-        synThreshold.setDisable(busy);
-        icmpThreshold.setDisable(busy);
-        observationWindow.setDisable(busy);
+        boolean ruleControlsDisabled = busy || captureActive;
+        portScanEnabled.setDisable(ruleControlsDisabled);
+        synEnabled.setDisable(ruleControlsDisabled);
+        icmpEnabled.setDisable(ruleControlsDisabled);
+        portScanThreshold.setDisable(ruleControlsDisabled);
+        synThreshold.setDisable(ruleControlsDisabled);
+        icmpThreshold.setDisable(ruleControlsDisabled);
+        observationWindow.setDisable(ruleControlsDisabled);
+        updateCaptureControls();
+    }
+
+    private void updateCaptureControls() {
+        if (captureInterfaceCombo == null || startCaptureButton == null) {
+            return;
+        }
+        LiveCaptureState state = liveCaptureService == null
+                ? LiveCaptureState.IDLE : liveCaptureService.snapshot().state();
+        boolean active = isCaptureActive(state);
+        boolean busy = activeImport != null;
+        boolean noInterface = captureInterfaceCombo.getValue() == null;
+        captureInterfaceCombo.setDisable(active || busy);
+        refreshInterfacesButton.setDisable(active || busy);
+        startCaptureButton.setDisable(
+                closed || !persistenceReady || busy || active || noInterface);
+        stopCaptureButton.setDisable(
+                closed || state != LiveCaptureState.RUNNING && state != LiveCaptureState.STARTING);
+    }
+
+    private static boolean isCaptureActive(LiveCaptureState state) {
+        return state == LiveCaptureState.STARTING
+                || state == LiveCaptureState.RUNNING
+                || state == LiveCaptureState.STOPPING;
     }
 
     private void applyRuleSettings(DetectionRuleSettings settings) {
